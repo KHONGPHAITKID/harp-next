@@ -484,19 +484,23 @@ def get_parser():
         "--path_dataset",
         type=str,
         help="Path to dataset",
-        default="/path/to/dataset",
+        default="../dataset/SemanticKitti/data_odometry_velodyne/dataset/sequences",
     )
     parser.add_argument(
-        "--log_path", type=str, required=True, default="./logs/harpnext-experiment", help="Path to log folder"
+        "--log_path",
+        type=str,
+        required=False,
+        default="./logs/harpnext-semantickitti",
+        help="Path to log folder",
     )
     parser.add_argument(
         "-r", "--restart", action="store_true", default=False, help="Restart training"
     )
     parser.add_argument(
-        "--seed", default=None, type=int, help="Seed for initializing training"
+        "--seed", default=219, type=int, help="Seed for initializing training"
     )
     parser.add_argument(
-        "--gpu", default=None, type=int, help="Set to any number to use gpu 0"
+        "--gpu", default=0, type=int, help="Set to any number to use gpu 0"
     )
     parser.add_argument(
         "--multiprocessing-distributed",
@@ -515,13 +519,15 @@ def get_parser():
     parser.add_argument(
         "--mainconfig",
         type=str, 
-        required=True, 
+        required=False,
+        default="configs/main/main-config.yaml",
         help="Path to main config"
     )
     parser.add_argument(
         "--netconfig",
         type=str, 
-        required=True, 
+        required=False,
+        default="configs/net/harpnext-semantickitti.yaml",
         help="Path to specific network model config"
     )
     parser.add_argument(
@@ -543,7 +549,11 @@ def get_parser():
         help="To run in Performance Mode, ensure a batch size of 1",
     )
     parser.add_argument(
-        "--checkpoint", type=str, required=False, default="./logs/harpnext-experiment/", help="Path to checkpoint directory"
+        "--checkpoint",
+        type=str,
+        required=False,
+        default="./logs/harpnext-cutmix-semantickitti-64x512-retrain",
+        help="Path to checkpoint directory",
     )
     parser.add_argument(
         "--test",
