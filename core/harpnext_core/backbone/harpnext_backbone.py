@@ -164,7 +164,7 @@ class HARPNeXtBackbone(nn.Module):
                  dw_conv_kernel = 7,
                  dw_conv_bias = True,
                  inter_align_corners = True,
-                 block_type: str = "convseneXt",
+                 block_type: str = "convsenext",
                  block_cfg: Optional[dict] = None) -> None:
         super(HARPNeXtBackbone, self).__init__()
 
@@ -179,7 +179,7 @@ class HARPNeXtBackbone(nn.Module):
         if self.block_type in ("tinyvim", "tvim"):
             from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
             self.block = HARPNeXtTinyViMBlock
-        elif self.block_type not in ("convsennext", "convse"):
+        elif self.block_type not in ("convsenext", "convsennext", "convse"):
             raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
         self.output_shape = output_shape
         self.ny = output_shape[0]

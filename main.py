@@ -490,7 +490,7 @@ def get_parser():
         "--path_dataset",
         type=str,
         help="Path to dataset",
-        default="../dataset/SemanticKitti/data_odometry_velodyne/dataset/sequences",
+        default="../dataset/SemanticKitti/data_odometry_velodyne",
     )
     parser.add_argument(
         "--log_path",

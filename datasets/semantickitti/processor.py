@@ -78,6 +78,27 @@ def getSemanticKITTIProcessor(base):
             else:
                 raise Exception(f"Unknown split {self.phase}")
 
+            # Resolve data roots for velodyne and labels.
+            root_has_sequences = os.path.isdir(os.path.join(self.rootdir, "dataset", "sequences"))
+            if root_has_sequences:
+                self.velodyne_root = self.rootdir
+                self.labels_root = self.rootdir
+            else:
+                velodyne_root = os.path.join(self.rootdir, "data_odometry_velodyne")
+                labels_root = os.path.join(self.rootdir, "data_odometry_labels")
+                if os.path.isdir(os.path.join(velodyne_root, "dataset", "sequences")):
+                    self.velodyne_root = velodyne_root
+                    if os.path.isdir(os.path.join(labels_root, "dataset", "sequences")):
+                        self.labels_root = labels_root
+                    else:
+                        # Fallback: labels are stored alongside velodyne.
+                        self.labels_root = velodyne_root
+                else:
+                    raise FileNotFoundError(
+                        f"SemanticKITTI sequences not found under {self.rootdir}. "
+                        "Expected <root>/dataset/sequences or <root>/data_odometry_velodyne/dataset/sequences."
+                    )
+
             # Find all files
             self.im_idx = []
             self.im_idx_label = []
@@ -85,7 +106,7 @@ def getSemanticKITTIProcessor(base):
                 self.im_idx.extend(
                     glob(
                         os.path.join(
-                            self.rootdir,
+                            self.velodyne_root,
                             "dataset",
                             "sequences",
                             str(i_folder).zfill(2),
@@ -97,7 +118,7 @@ def getSemanticKITTIProcessor(base):
                 self.im_idx_label.extend(
                     glob(
                         os.path.join(
-                            self.rootdir,
+                            self.labels_root,
                             "dataset",
                             "sequences",
                             str(i_folder).zfill(2),
@@ -139,10 +160,15 @@ def getSemanticKITTIProcessor(base):
                 labels = np.zeros((pc.shape[0], 1), dtype=np.uint8)
                 labels_inst = np.zeros((pc.shape[0], 1), dtype=np.uint32)
             else:
-                labels_inst = np.fromfile(
-                    self.im_idx[index].replace("velodyne", "labels")[:-3] + "label",
-                    dtype=np.uint32,
-                ).reshape((-1, 1))
+                label_path = os.path.join(
+                    self.labels_root,
+                    "dataset",
+                    "sequences",
+                    os.path.basename(os.path.dirname(os.path.dirname(self.im_idx[index]))),
+                    "labels",
+                    os.path.basename(self.im_idx[index]).replace(".bin", ".label"),
+                )
+                labels_inst = np.fromfile(label_path, dtype=np.uint32).reshape((-1, 1))
                 # print(f"labels_inst is {labels_inst}\n")
                 labels = labels_inst & 0xFFFF  # delete high 16 digits binary
                 # print(f"labels is {labels}\n")

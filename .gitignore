@@ -9,3 +9,5 @@
 #*.npy
 #*.npz
 *.txt
+
+logs/
