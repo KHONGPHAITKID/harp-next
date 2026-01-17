@@ -33,3 +33,12 @@ scheduler:
   min_lr: 0.00001 
   max_epoch: 90 
   epoch_warmup: 4
+
+mlflow:
+  enable: true
+  tracking_uri: "http://140.245.117.232:5000"
+  experiment_name: "harpnext"
+  run_name: "[train] harpnext"
+  nested: false
+  log_checkpoints: false
+  log_code_snapshot: false

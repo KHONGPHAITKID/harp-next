@@ -52,7 +52,10 @@ class Manager:
         checkpoint = None,
         netconfig = None,
         preproc_gpu = False,
-        perf = False
+        perf = False,
+        mlflow_cfg = None,
+        args = None,
+        mainconfig = None
     ):
 
         # Optim. methods
@@ -115,8 +118,114 @@ class Manager:
         # Flag for pre_process on GPU:
         self.preproc_gpu = preproc_gpu 
 
+        # MLflow logging
+        self.mlflow_cfg = mlflow_cfg or {}
+        self.mlflow = None
+        self._mlflow_enabled = False
+        self._mlflow_run_started = False
+        self._last_metrics = {"train": None, "val": None}
+        self._init_mlflow(args, mainconfig, netconfig)
+
+    def _init_mlflow(self, args, mainconfig, netconfig):
+        if not self.mlflow_cfg.get("enable", False):
+            return
+        if not (self.rank == 0 or self.rank is None or self.rank == self.added_rank):
+            return
+        try:
+            import mlflow
+        except Exception as exc:
+            print(f"MLflow disabled (import error): {exc}")
+            return
+
+        tracking_uri = self.mlflow_cfg.get("tracking_uri")
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        experiment_name = self.mlflow_cfg.get("experiment_name", "default")
+        mlflow.set_experiment(experiment_name)
+
+        run_name = self.mlflow_cfg.get("run_name")
+        nested = self.mlflow_cfg.get("nested", False)
+        mlflow.start_run(run_name=run_name, nested=nested)
+        self.mlflow = mlflow
+        self._mlflow_enabled = True
+        self._mlflow_run_started = True
+
+        params = {}
+        if args is not None:
+            params.update({
+                "net": getattr(args, "net", None),
+                "dataset": getattr(args, "dataset", None),
+                "netconfig": getattr(args, "netconfig", None),
+                "mainconfig": getattr(args, "mainconfig", None),
+                "seed": getattr(args, "seed", None),
+                "fp16": getattr(args, "fp16", None),
+                "gpu": getattr(args, "gpu", None),
+            })
+        if mainconfig is not None:
+            params.update({
+                "batch_size": mainconfig.get("dataloader", {}).get("batch_size"),
+                "num_workers": mainconfig.get("dataloader", {}).get("num_workers"),
+                "lr": mainconfig.get("optim", {}).get("lr"),
+                "weight_decay": mainconfig.get("optim", {}).get("weight_decay"),
+            })
+        if netconfig is not None:
+            params.update({
+                "model_name": netconfig.get("model", {}).get("name"),
+                "block_type": netconfig.get("model", {}).get("backbone", {}).get("block_type", "convsennext"),
+                "num_classes": netconfig.get("classif", {}).get("nb_class"),
+            })
+
+        params = {k: v for k, v in params.items() if v is not None}
+        if params:
+            self.mlflow.log_params(params)
+
+        if args is not None:
+            for cfg_path in [getattr(args, "mainconfig", None), getattr(args, "netconfig", None)]:
+                if cfg_path and os.path.exists(cfg_path):
+                    self.mlflow.log_artifact(cfg_path, artifact_path="configs")
+
+        if self.mlflow_cfg.get("log_code_snapshot", False):
+            for code_path in [
+                "main.py",
+                "core/harpnext_core/backbone/harpnext_backbone.py",
+                "core/harpnext_core/segmentor/harpnext.py",
+                "core/tinyvim_core/tvimblock.py",
+            ]:
+                if os.path.exists(code_path):
+                    self.mlflow.log_artifact(code_path, artifact_path="code")
+
+    def _mlflow_log_epoch(self, phase, step):
+        if not self._mlflow_enabled:
+            return
+        metrics = self._last_metrics.get(phase)
+        if not metrics:
+            return
+        prefixed = {f"{phase}/{k}": v for k, v in metrics.items()}
+        self.mlflow.log_metrics(prefixed, step=step)
+
+    def _mlflow_log_checkpoint(self, ckpt_path):
+        if not self._mlflow_enabled:
+            return
+        if not self.mlflow_cfg.get("log_checkpoints", False):
+            return
+        if os.path.exists(ckpt_path):
+            self.mlflow.log_artifact(ckpt_path, artifact_path="checkpoints")
+
+    def close_mlflow(self):
+        if self._mlflow_run_started and self.mlflow is not None:
+            self.mlflow.end_run()
+            self._mlflow_run_started = False
+
     def print_log(self, running_loss, oAcc, mAcc, mIoU, ious, training):
         if self.rank == 0 or self.rank is None or self.rank == self.added_rank:
+            phase = "train" if training else "val"
+            self._last_metrics[phase] = {
+                "loss": running_loss,
+                "oAcc": oAcc,
+                "mAcc": mAcc,
+                "mIoU": mIoU,
+                "lr": self.optim.param_groups[0]["lr"],
+            }
             # Global score
             log = (
                 f"\nEpoch: {self.current_epoch:d} :\n"
@@ -421,13 +530,16 @@ class Manager:
             filename = self.path_to_ckpt
             filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
             torch.save(dict_to_save, filename)
+            self._mlflow_log_checkpoint(filename)
 
     def train(self):
         for _ in range(self.current_epoch, self.max_epoch):
             # Train
             self.one_epoch(training=True)
+            self._mlflow_log_epoch("train", self.current_epoch)
             # Val
             miou = self.one_epoch(training=False)
+            self._mlflow_log_epoch("val", self.current_epoch)
             # Save best checkpoint
             if miou is not None and miou > self.best_miou:
                 self.best_miou = miou

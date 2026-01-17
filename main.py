@@ -412,14 +412,20 @@ def distributed_training(gpu, ngpus_per_node, args, mainconfig, netconfig):
         netconfig=netconfig,
         preproc_gpu=netconfig["preproc"]["gpu"],
         perf=args.perf,
+        mlflow_cfg=mainconfig.get("mlflow", {}),
+        args=args,
+        mainconfig=mainconfig,
 
     )
     if args.restart:
         mng.load_state(best=True) #True
     if args.eval:
         mng.one_epoch(training=False)
+        mng._mlflow_log_epoch("val", mng.current_epoch)
+        mng.close_mlflow()
     else:
         mng.train()
+        mng.close_mlflow()
 
 
 def main(args, mainconfig, netconfig):
