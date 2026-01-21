@@ -23,7 +23,7 @@ import warnings
 import utils.transformations.transforms as tr
 
 class InstanceCutMix:
-    def __init__(self, phase="train", temp_dir="/tmp/semantic_kitti_instances/"):
+    def __init__(self, phase="train", temp_dir="./semantic_kitti_instances/"):
 
         # Train or Trainval
         self.phase = phase

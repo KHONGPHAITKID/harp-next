@@ -14,11 +14,11 @@
 
 #General Network Config
 dataloader:
-  batch_size: 4 # 4 for nuScenes and 2 for SemanticKITTI  
+  batch_size: 2 # 4 for nuScenes and 2 for SemanticKITTI  
   num_workers: 12
 
 augmentations:
-  instance_cutmix: False # set True when Training if needed, False when validating (only for SemanticKITTI)
+  instance_cutmix: True # set True when Training if needed, False when validating (only for SemanticKITTI)
 
 loss:
   lovasz: 1.0
