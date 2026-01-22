@@ -31,6 +31,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import datetime
 
+
+def _allow_numpy_safe_globals():
+    """Allowlist numpy scalars for torch.load when weights_only=True (PyTorch >=2.6)."""
+    serialization = getattr(torch, "serialization", None)
+    add_safe_globals = getattr(serialization, "add_safe_globals", None)
+    if add_safe_globals is not None:
+        add_safe_globals([np.core.multiarray.scalar])
+
 class Manager:
     def __init__(
         self,
@@ -476,6 +484,7 @@ class Manager:
         filename = self.path_to_ckpt
         filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
         rank = 0 if self.rank is None else self.rank
+        _allow_numpy_safe_globals()
         ckpt = torch.load(
             filename,
             map_location=f"cuda:{rank}",

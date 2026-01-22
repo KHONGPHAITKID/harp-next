@@ -36,6 +36,15 @@ from utils.loss.lovasz import Lovasz_softmax
 from utils.loss.boundary_loss import BoundaryLoss
 from torch.nn import CrossEntropyLoss
 
+
+def _allow_numpy_safe_globals():
+    """Allowlist numpy scalars for torch.load when weights_only=True (PyTorch >=2.6)."""
+    serialization = getattr(torch, "serialization", None)
+    add_safe_globals = getattr(serialization, "add_safe_globals", None)
+    if add_safe_globals is not None:
+        add_safe_globals([np.core.multiarray.scalar])
+
+
 def load_configs(mainfile, netfile):
     with open(mainfile, "r") as mf:
         mainconfig = yaml.safe_load(mf)
@@ -228,6 +237,7 @@ def load_checkpoint_for_inference(model, checkpoint_path, gpu):
             raise FileNotFoundError(f"No checkpoint found in {checkpoint_path}")
 
     map_location = f"cuda:{gpu}" if gpu is not None else "cpu"
+    _allow_numpy_safe_globals()
     ckpt = torch.load(checkpoint_path, map_location=map_location)
     state_dict = ckpt.get("net", ckpt)
     try:
