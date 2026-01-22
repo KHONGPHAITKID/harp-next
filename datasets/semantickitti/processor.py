@@ -99,34 +99,55 @@ def getSemanticKITTIProcessor(base):
                         "Expected <root>/dataset/sequences or <root>/data_odometry_velodyne/dataset/sequences."
                     )
 
+            def _gather_sequence_files(root, seq, pattern, default_subdir):
+                """Return all files for a sequence, supporting both nested and flat layouts."""
+                seq_dir = os.path.join(
+                    root, "dataset", "sequences", str(seq).zfill(2)
+                )
+                search_paths = []
+                if default_subdir is not None:
+                    subdir_path = os.path.join(seq_dir, default_subdir, pattern)
+                    search_paths.append(subdir_path)
+                search_paths.append(os.path.join(seq_dir, pattern))
+
+                for path in search_paths:
+                    files = glob(path)
+                    if files:
+                        return files
+                return []
+
             # Find all files
             self.im_idx = []
             self.im_idx_label = []
             for i_folder in np.sort(split):
-                self.im_idx.extend(
-                    glob(
-                        os.path.join(
-                            self.velodyne_root,
-                            "dataset",
-                            "sequences",
-                            str(i_folder).zfill(2),
-                            "velodyne",
-                            "*.bin",
-                        )
-                    )
+                velodyne_files = _gather_sequence_files(
+                    self.velodyne_root, i_folder, "*.bin", "velodyne"
                 )
-                self.im_idx_label.extend(
-                    glob(
-                        os.path.join(
-                            self.labels_root,
-                            "dataset",
-                            "sequences",
-                            str(i_folder).zfill(2),
-                            "labels",
-                            "*.label",
-                        )
+                if not velodyne_files:
+                    raise FileNotFoundError(
+                        "No point clouds found for sequence "
+                        f"{i_folder:02d} under {self.velodyne_root}. "
+                        "Expected either <seq>/velodyne/*.bin or <seq>/*.bin."
                     )
+                self.im_idx.extend(velodyne_files)
+
+                label_files = _gather_sequence_files(
+                    self.labels_root, i_folder, "*.label", "labels"
                 )
+                if not label_files:
+                    if self.phase == "test":
+                        # Keep placeholder paths derived from point clouds to preserve deterministic order.
+                        label_files = [
+                            os.path.splitext(pc_path)[0] + ".label"
+                            for pc_path in velodyne_files
+                        ]
+                    else:
+                        raise FileNotFoundError(
+                            "No label files found for sequence "
+                            f"{i_folder:02d} under {self.labels_root}. "
+                            "Expected either <seq>/labels/*.label or <seq>/*.label."
+                        )
+                self.im_idx_label.extend(label_files)
             self.im_idx = np.sort(self.im_idx)
             self.im_idx_label = np.sort(self.im_idx_label)
 
