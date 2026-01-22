@@ -42,10 +42,23 @@ from torch.nn import CrossEntropyLoss
 
 
 def _allow_numpy_safe_globals():
-    """Allowlist numpy scalars for torch.load when weights_only=True (PyTorch >=2.6)."""
+    """Allowlist numpy scalar implementations used in checkpoints (PyTorch >=2.6)."""
     if _torch_add_safe_globals is None:
         return
-    _torch_add_safe_globals([np.core.multiarray.scalar])
+
+    scalar_types = []
+    for attr in ("core", "_core"):
+        numpy_core = getattr(np, attr, None)
+        if numpy_core is None:
+            continue
+        multiarray = getattr(numpy_core, "multiarray", None)
+        scalar = getattr(multiarray, "scalar", None)
+        if scalar is not None:
+            scalar_types.append(scalar)
+
+    # Avoid calling torch multiple times if nothing was found.
+    if scalar_types:
+        _torch_add_safe_globals(scalar_types)
 
 
 def load_configs(mainfile, netfile):
