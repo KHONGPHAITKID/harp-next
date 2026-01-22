@@ -30,14 +30,17 @@ import seaborn as sn
 import pandas as pd
 import matplotlib.pyplot as plt
 import datetime
+try:
+    from torch.serialization import add_safe_globals as _torch_add_safe_globals
+except ImportError:
+    _torch_add_safe_globals = None
 
 
 def _allow_numpy_safe_globals():
     """Allowlist numpy scalars for torch.load when weights_only=True (PyTorch >=2.6)."""
-    serialization = getattr(torch, "serialization", None)
-    add_safe_globals = getattr(serialization, "add_safe_globals", None)
-    if add_safe_globals is not None:
-        add_safe_globals([np.core.multiarray.scalar])
+    if _torch_add_safe_globals is None:
+        return
+    _torch_add_safe_globals([np.core.multiarray.scalar])
 
 class Manager:
     def __init__(

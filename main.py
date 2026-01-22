@@ -25,6 +25,10 @@ import random
 import warnings
 import argparse
 import numpy as np
+try:
+    from torch.serialization import add_safe_globals as _torch_add_safe_globals
+except ImportError:
+    _torch_add_safe_globals = None
 import utils.transformations.transforms as tr
 from utils.metrics.semanticsegmentation import SemSegLoss
 from trainer.scheduler import WarmupCosine
@@ -39,10 +43,9 @@ from torch.nn import CrossEntropyLoss
 
 def _allow_numpy_safe_globals():
     """Allowlist numpy scalars for torch.load when weights_only=True (PyTorch >=2.6)."""
-    serialization = getattr(torch, "serialization", None)
-    add_safe_globals = getattr(serialization, "add_safe_globals", None)
-    if add_safe_globals is not None:
-        add_safe_globals([np.core.multiarray.scalar])
+    if _torch_add_safe_globals is None:
+        return
+    _torch_add_safe_globals([np.core.multiarray.scalar])
 
 
 def load_configs(mainfile, netfile):
