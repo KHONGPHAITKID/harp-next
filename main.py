@@ -254,7 +254,7 @@ def load_checkpoint_for_inference(model, checkpoint_path, gpu):
 
     map_location = f"cuda:{gpu}" if gpu is not None else "cpu"
     _allow_numpy_safe_globals()
-    ckpt = torch.load(checkpoint_path, map_location=map_location)
+    ckpt = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     state_dict = ckpt.get("net", ckpt)
     try:
         model.load_state_dict(state_dict)
