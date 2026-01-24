@@ -109,6 +109,15 @@ class Manager:
         self.checkpoint = checkpoint
 
         self.netconfig = netconfig
+        self.save_frequency = 0
+        self.val_frequency = 1
+        if mainconfig is not None:
+            self.save_frequency = (
+                mainconfig.get("scheduler", {}).get("save_frequency", 0) or 0
+            )
+            self.val_frequency = (
+                mainconfig.get("scheduler", {}).get("val_frequency", 1) or 0
+            )
         
         # Monitoring
         if tensorboard and (self.rank == 0 or self.rank is None or self.rank == self.added_rank):
@@ -529,36 +538,50 @@ class Manager:
 
     def save_state(self, best=False):
         if self.rank == 0 or self.rank is None or self.rank == self.added_rank:
-            dict_to_save = {
-                "epoch": self.current_epoch,
-                "net": self.net.state_dict(),
-                "optim": self.optim.state_dict(),
-                "scheduler": self.scheduler.state_dict()
-                if self.scheduler is not None
-                else None,
-                "scaler": self.scaler.state_dict() if self.fp16 else None,
-                "best_miou": self.best_miou,
-            }
             filename = self.path_to_ckpt
             filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
-            torch.save(dict_to_save, filename)
-            self._mlflow_log_checkpoint(filename)
+            self._save_state_to(filename)
+
+    def _save_state_to(self, filename):
+        dict_to_save = {
+            "epoch": self.current_epoch,
+            "net": self.net.state_dict(),
+            "optim": self.optim.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "scaler": self.scaler.state_dict() if self.fp16 else None,
+            "best_miou": self.best_miou,
+        }
+        torch.save(dict_to_save, filename)
+        self._mlflow_log_checkpoint(filename)
 
     def train(self):
         for _ in range(self.current_epoch, self.max_epoch):
             # Train
             self.one_epoch(training=True)
             self._mlflow_log_epoch("train", self.current_epoch)
-            # Val
-            miou = self.one_epoch(training=False)
-            self._mlflow_log_epoch("val", self.current_epoch)
-            # Save best checkpoint
-            if miou is not None and miou > self.best_miou:
-                self.best_miou = miou
-                self.save_state(best=True)
-                print(f"\n\n*** New best mIoU: {self.best_miou:.1f}.\n")
+            # Val (optional)
+            do_val = False
+            if self.val_frequency == 0:
+                do_val = False
+            elif self.current_epoch % self.val_frequency == 0:
+                do_val = True
+
+            if do_val:
+                miou = self.one_epoch(training=False)
+                self._mlflow_log_epoch("val", self.current_epoch)
+                # Save best checkpoint
+                if miou is not None and miou > self.best_miou:
+                    self.best_miou = miou
+                    self.save_state(best=True)
+                    print(f"\n\n*** New best mIoU: {self.best_miou:.1f}.\n")
             # Save last checkpoint
             self.save_state()
+            # Save periodic checkpoint if enabled
+            if self.save_frequency and self.current_epoch % self.save_frequency == 0:
+                filename = os.path.join(
+                    self.path_to_ckpt, f"ckpt_epoch_{self.current_epoch}.pth"
+                )
+                self._save_state_to(filename)
             # Increase epoch number
             self.current_epoch += 1
         if self.rank == 0 or self.rank is None or self.rank == self.added_rank:

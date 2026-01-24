@@ -31,8 +31,10 @@ optim:
 
 scheduler:
   min_lr: 0.00001 
-  max_epoch: 90 
-  epoch_warmup: 4
+  max_epoch: 100
+  epoch_warmup: 8
+  save_frequency: 0 # 0 disables periodic epoch saves
+  val_frequency: 1 # 0 disables validation during training
 
 mlflow:
   enable: true

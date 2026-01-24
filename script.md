@@ -1,0 +1,1 @@
+python main.py --net harpnext --dataset semantic_kitti --mainconfig ./configs/main/main-config.yaml --netconfig ./configs/net/harpnext-semantickitti.yaml --log_path ./logs/harpnext-cutmix-semantickitti-64x512-trainval --gpu 0 --seed 0 --fp16 --trainval
