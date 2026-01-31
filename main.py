@@ -18,6 +18,7 @@
 
 
 import os
+import tempfile
 import yaml
 import torch
 import torch.nn as nn
@@ -59,6 +60,16 @@ def _allow_numpy_safe_globals():
     # Avoid calling torch multiple times if nothing was found.
     if scalar_types:
         _torch_add_safe_globals(scalar_types)
+
+
+def _set_local_tmpdir():
+    """Force temp files into a local ./tmp directory to avoid /tmp exhaustion."""
+    tmp_dir = os.path.abspath("./tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    os.environ["TMPDIR"] = tmp_dir
+    os.environ["TMP"] = tmp_dir
+    os.environ["TEMP"] = tmp_dir
+    tempfile.tempdir = tmp_dir
 
 
 def load_configs(mainfile, netfile):
@@ -456,6 +467,7 @@ def distributed_training(gpu, ngpus_per_node, args, mainconfig, netconfig):
 
 def main(args, mainconfig, netconfig):
 
+    _set_local_tmpdir()
     args.device = "cuda"
     args.rank = 0
     args.world_size = 1
