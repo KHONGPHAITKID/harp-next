@@ -102,10 +102,8 @@ def get_train_augmentations(args, mainconfig, netconfig):
             list_of_transf.append(tr.GlobalRotScaleTrans(inplace=True, rot_range=rot_range, scale_ratio_range=scale_ratio_range, translation_std=translation_std))
         else:
             raise ValueError("Unknown transformation")
-
-        print("List of transformations:", list_of_transf)
-
-        return tr.Compose(list_of_transf)
+    print("List of transformations:", list_of_transf)
+    return tr.Compose(list_of_transf)
 
 
 
@@ -328,7 +326,9 @@ def run_semantickitti_test(args, mainconfig, netconfig):
 
             orig_len = int(batch["orig_len"][0])
             pred = pred[:orig_len]
-            pred_mapped = lut[pred]
+            # Training labels are shifted by -1 (learning labels 1..19 become 0..18).
+            # Shift back before applying learning_map_inv to export official SemanticKITTI IDs.
+            pred_mapped = lut[pred + 1]
 
             scan_path = batch["filename"][0]
             seq = os.path.basename(os.path.dirname(os.path.dirname(scan_path)))
