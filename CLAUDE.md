@@ -27,6 +27,7 @@ core/
     decode_heads/harpnext_head.py # Point-wise segmentation head
     decode_heads/aux_head.py    # Auxiliary heads for deep supervision
     preprocessing/              # Range projection and voxelization
+  tinyvim_core/                 # TinyViM block implementation (used by *-tinyvim.yaml configs)
 trainer/
   manager.py                    # Training loop, checkpointing, validation, MLflow logging
   scheduler.py                  # WarmupCosine LR schedule
@@ -39,9 +40,9 @@ utils/
   metrics/                      # Semantic segmentation mIoU tracking
   transformations/              # Train-time augmentations (flip, rotate, scale, point sample)
 logs/                           # Output: checkpoints (ckpt_best.pth, ckpt_last.pth), TensorBoard
-pretrained/                     # Downloaded pretrained weights (not committed)
+pretrained/                     # Not tracked; create manually and download weights before inference
 experiments/                    # Utility scripts (e.g., range image visualization)
-tmp/                            # Local temp dir (redirected from /tmp to avoid disk exhaustion)
+tmp/                            # Created automatically at startup; not committed
 ```
 
 ---
@@ -93,7 +94,7 @@ python main.py \
 
 ### Resume training from checkpoint
 
-Add `--restart` to a training command. It loads `ckpt_best.pth` (or `ckpt_last.pth`) from `--log_path`.
+Add `--restart` to a training command. It loads `ckpt_best.pth` from `--log_path`; falls back to `ckpt_last.pth` only if best is absent.
 
 ### Test set dump (SemanticKITTI only)
 
@@ -141,13 +142,13 @@ Controls dataset- and model-specific settings:
 ## Important Gotchas
 
 ### 1. SemanticKITTI label shift
-Training labels are shifted by **-1** internally (learning labels 1–19 become 0–18). When exporting test predictions, always shift back by **+1** before applying `learning_map_inv`. This is handled in `run_semantickitti_test()` in `main.py:331`. If you add new label-handling code, follow the same convention.
+Training labels are shifted by **-1** internally (learning labels 1–19 become 0–18). When exporting test predictions, always shift back by **+1** before applying `learning_map_inv`. This is handled in `run_semantickitti_test()` in `main.py` (the specific `+1` shift is at line 331: `lut[pred + 1]`). If you add new label-handling code, follow the same convention.
 
 ### 2. GPU preprocessing requires batch_size=1 during eval
 When `preproc.gpu: true` in the netconfig, the preprocessing is stateful and only safe with `batch_size: 1`. Always set this in `main-config.yaml` before running eval with GPU preprocessing. CPU mode (`preproc.gpu: false`) has no such restriction.
 
 ### 3. `instance_cutmix` must be False for validation
-In `configs/main/main-config.yaml`, set `augmentations.instance_cutmix: false` before any eval run. It is only meaningful during SemanticKITTI training. Leaving it `true` during eval causes unnecessary instance extraction overhead.
+In `configs/main/main-config.yaml`, set `augmentations.instance_cutmix: false` before any eval run. It is only meaningful during SemanticKITTI training. Leaving it `true` during eval triggers a full training-data scan to extract instances (see `main.py:497-499`) before eval even begins.
 
 ### 4. `--restart` is required for eval to load weights
 Running `--eval` without `--restart` will evaluate a randomly initialized model. Always pair them: `--eval --restart`.
@@ -169,7 +170,8 @@ Running `--eval` without `--restart` will evaluate a randomly initialized model.
   python main.py --eval --restart --gpu 0 --fp16 \
     --mainconfig ./configs/main/main-config.yaml \
     --netconfig ./configs/net/harpnext-semantickitti.yaml \
-    --log_path ./logs/<run-name>
+    --log_path ./logs/<run-name> \
+    --path_dataset /path/to/SemanticKITTI
   ```
 - **MLflow** is configured in `main-config.yaml`. To disable tracking locally, set `mlflow.enable: false`.
 - **TensorBoard** logs are written to `--log_path` during training (not during eval-only runs).
