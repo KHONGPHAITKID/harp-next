@@ -184,8 +184,11 @@ class HARPNeXtBackbone(nn.Module):
             from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
             self._hybrid_tinyvim_block = HARPNeXtTinyViMBlock
             self._hybrid_convsenext_block = ConvSENeXt
-            assert stage_block_types is not None and len(stage_block_types) == num_stages, \
-                f"block_type='hybrid' requires stage_block_types list of length {num_stages}"
+            if stage_block_types is None or len(stage_block_types) != num_stages:
+                raise ValueError(
+                    f"block_type='hybrid' requires stage_block_types list of length {num_stages}, "
+                    f"got {stage_block_types!r}"
+                )
             self.stage_block_types = [s.lower() for s in stage_block_types]
         elif self.block_type not in ("convsenext", "convsennext", "convse"):
             raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
