@@ -59,17 +59,22 @@ class RepDW(torch.nn.Module):
             trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-    
+
     @torch.no_grad()
     def fuse(self):
+        if self.dilation != 1:
+            raise NotImplementedError(
+                f"RepDW.fuse() is not supported for dilation={self.dilation} > 1. "
+                "Fusing dilated reparameterized convolutions requires special handling."
+            )
         conv = self.conv.fuse()
         conv1 = self.conv1
-        
+
         conv_w = conv.weight
         conv_b = conv.bias
         conv1_w = conv1.weight
         conv1_b = conv1.bias
-        
+
         conv1_w = torch.nn.functional.pad(conv1_w, [1,1,1,1])
 
         identity = torch.nn.functional.pad(torch.ones(conv1_w.shape[0], conv1_w.shape[1], 1, 1, device=conv1_w.device), [1,1,1,1])
@@ -385,6 +390,8 @@ class SS2D(nn.Module):
         
         # conv =======================================
         if self.d_conv > 1:
+            # Rep_Inception uses axial 1×K / K×1 kernels (kernel_max=7), providing
+            # sufficient receptive field as input preprocessor; dilation not applied here.
             self.conv2d = Rep_Inception(d_expand,7)
 
         # rank ratio =====================================
