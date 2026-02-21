@@ -94,7 +94,7 @@ python main.py \
 
 ### Resume training from checkpoint
 
-Add `--restart` to a training command. It loads `ckpt_best.pth` from `--log_path`; falls back to `ckpt_last.pth` only if best is absent.
+Add `--restart` to a training command. It calls `load_state(best=True)` in `trainer/manager.py`, which loads `ckpt_best.pth` unconditionally from `--log_path`. There is no fallback; a missing `ckpt_best.pth` will raise `FileNotFoundError`.
 
 ### Test set dump (SemanticKITTI only)
 
