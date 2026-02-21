@@ -608,19 +608,18 @@ class TViMBlock(nn.Module):
             mlp_hidden_dim = int(hidden_dim * mlp_ratio)
             self.mlp = FFN(in_dim=hidden_dim, mid_dim=mlp_hidden_dim, act_layer=mlp_act_layer, drop=mlp_drop_rate)
 
-    def _forward(self, input: torch.Tensor, residual: Optional[torch.Tensor] = None):
-        skip = residual if residual is not None else input
+    def _forward(self, input: torch.Tensor):
         if self.ssm_branch:
-            x = skip + self.drop_path(self.op(input))
+            x = input + self.drop_path(self.op(input))
         if self.mlp_branch:
             x = x + self.drop_path(self.mlp(x)) # FFN
         return x
 
-    def forward(self, input: torch.Tensor, residual: Optional[torch.Tensor] = None):
+    def forward(self, input: torch.Tensor):
         if self.use_checkpoint:
-            return checkpoint.checkpoint(self._forward, input, residual)
+            return checkpoint.checkpoint(self._forward, input)
         else:
-            return self._forward(input, residual)
+            return self._forward(input)
 
 
 class HARPNeXtTinyViMBlock(nn.Module):
@@ -682,8 +681,7 @@ class HARPNeXtTinyViMBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
         if self.downsample is not None:
-            residual = self.downsample(x)
-        return self.block(x, residual=residual)
+            x = self.downsample(x)
+        return self.block(x)
 
