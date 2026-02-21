@@ -42,11 +42,12 @@ class Conv2d_BN(torch.nn.Sequential):
 
 
 class RepDW(torch.nn.Module):
-    def __init__(self, ed) -> None:
+    def __init__(self, ed, dilation: int = 1) -> None:
         super().__init__()
-        self.conv = Conv2d_BN(ed, ed, 3, 1, 1, groups=ed)
+        self.conv = Conv2d_BN(ed, ed, 3, 1, dilation, dilation=dilation, groups=ed)
         self.conv1 = torch.nn.Conv2d(ed, ed, 1, 1, 0, groups=ed)
         self.dim = ed
+        self.dilation = dilation
         self.bn = torch.nn.BatchNorm2d(ed)
         self.apply(self._init_weights)
     
@@ -351,6 +352,7 @@ class SS2D(nn.Module):
         dt_init_floor=1e-4,
         simple_init=False,
         index = 0,
+        dilation: int = 1,
         **kwargs,
     ):
         """
@@ -366,7 +368,7 @@ class SS2D(nn.Module):
         #(low, high)
         split_list = [1/4,1/2,1/2,3/4]
         d_inner = int(d_expand*split_list[index])
-        self.local_conv = RepDW(d_expand-d_inner)
+        self.local_conv = RepDW(d_expand-d_inner, dilation=dilation)
         self.split = (d_inner, d_expand-d_inner)
 
         self.dt_rank = math.ceil(d_model / 16) if dt_rank == "auto" else dt_rank
@@ -567,6 +569,7 @@ class TViMBlock(nn.Module):
         # =============================
         use_checkpoint: bool = False,
         index = 0,
+        dilation: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -589,6 +592,7 @@ class TViMBlock(nn.Module):
                 dropout=ssm_drop_rate,
                 simple_init=ssm_simple_init,
                 index = index,
+                dilation=dilation,
             )
         
         self.drop_path = DropPath(drop_path)
@@ -666,6 +670,7 @@ class HARPNeXtTinyViMBlock(nn.Module):
             mlp_drop_rate=mlp_drop_rate,
             use_checkpoint=use_checkpoint,
             index=index,
+            dilation=dilation,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
