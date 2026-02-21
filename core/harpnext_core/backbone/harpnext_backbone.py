@@ -165,7 +165,8 @@ class HARPNeXtBackbone(nn.Module):
                  dw_conv_bias = True,
                  inter_align_corners = True,
                  block_type: str = "convsenext",
-                 block_cfg: Optional[dict] = None) -> None:
+                 block_cfg: Optional[dict] = None,
+                 stage_block_types: Optional[list] = None) -> None:
         super(HARPNeXtBackbone, self).__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,6 +180,13 @@ class HARPNeXtBackbone(nn.Module):
         if self.block_type in ("tinyvim", "tvim"):
             from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
             self.block = HARPNeXtTinyViMBlock
+        elif self.block_type == "hybrid":
+            from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
+            self._hybrid_tinyvim_block = HARPNeXtTinyViMBlock
+            self._hybrid_convsenext_block = ConvSENeXt
+            assert stage_block_types is not None and len(stage_block_types) == num_stages, \
+                f"block_type='hybrid' requires stage_block_types list of length {num_stages}"
+            self.stage_block_types = [s.lower() for s in stage_block_types]
         elif self.block_type not in ("convsenext", "convsennext", "convse"):
             raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
         self.output_shape = output_shape
@@ -221,6 +229,7 @@ class HARPNeXtBackbone(nn.Module):
                 dw_conv_kernel=dw_conv_kernel,
                 dw_conv_bias=dw_conv_bias,
                 index=i,
+                stage_block_type=self.stage_block_types[i] if self.block_type == "hybrid" else None,
             )
             self.point_fusion_layers.append(self._make_point_layer(inplanes + planes, planes))
             self.pixel_fusion_layers.append(self._make_fusion_layer(planes * 2, planes))
@@ -290,7 +299,16 @@ class HARPNeXtBackbone(nn.Module):
         )
 
     # residual ConvSENeXt
-    def _make_res_layer(self, block: nn.Module, inplanes, planes, num_blocks, stride, dilation, dw_conv_kernel, dw_conv_bias, index: int = 0):
+    def _make_res_layer(self, block: nn.Module, inplanes, planes, num_blocks, stride, dilation, dw_conv_kernel, dw_conv_bias, index: int = 0, stage_block_type: str = None):
+        # Resolve block class for this stage (hybrid mode selects per-stage)
+        if stage_block_type is not None:
+            effective_block_type = stage_block_type
+            if effective_block_type in ("tinyvim", "tvim"):
+                block = self._hybrid_tinyvim_block
+            else:
+                block = self._hybrid_convsenext_block
+        else:
+            effective_block_type = self.block_type
         downsample = None
         if stride != 1 or inplanes != planes:
             downsample = nn.Sequential(
@@ -299,7 +317,7 @@ class HARPNeXtBackbone(nn.Module):
             )
 
         layers = []
-        if self.block_type in ("tinyvim", "tvim"):
+        if effective_block_type in ("tinyvim", "tvim"):
             layers.append(
                 block(
                     inplanes=inplanes,
@@ -323,7 +341,7 @@ class HARPNeXtBackbone(nn.Module):
                     dw_conv_bias=dw_conv_bias))
         inplanes = planes
         for _ in range(1, num_blocks):
-            if self.block_type in ("tinyvim", "tvim"):
+            if effective_block_type in ("tinyvim", "tvim"):
                 layers.append(
                     block(
                         inplanes=inplanes,
