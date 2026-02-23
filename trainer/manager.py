@@ -365,7 +365,10 @@ class Manager:
                 out_losses = out["losses_seg_logits"]
                 if training:
                     lamda = self.netconfig["train"]["lamda"]
+                    lovasz_main_weight = self.netconfig["train"].get("lovasz_main_weight", 0.0)
                     loss_points = self.loss["ce"](out_losses["HARPNeXtHead.seg_logit"], labels["pt_labels"])
+                    if lovasz_main_weight > 0:
+                        loss_points = loss_points + lovasz_main_weight * self.loss["lovasz"](out_losses["HARPNeXtHead.seg_logit"], labels["pt_labels"])
                     loss_aux_0 = self.loss["ce"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"])
                     loss_aux_1 = self.loss["ce"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"])
                     loss_aux_2 = self.loss["ce"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"])

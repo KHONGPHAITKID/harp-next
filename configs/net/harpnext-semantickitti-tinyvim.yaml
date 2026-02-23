@@ -91,6 +91,7 @@ range_proj:
 
 train:
   lamda: 1.0
+  lovasz_main_weight: 1.0
 
 preproc:
   gpu: False #Set to False when Training (PreProc on CPU)

@@ -28,6 +28,20 @@ model:
     point_in_channels: 384
     output_shape: [64, 512]
     depth: 10
+    block_type: hybrid
+    stage_block_types: [convsenext, convsenext, tinyvim, tinyvim]
+    block_cfg:
+      ssm_d_state: 16
+      ssm_ratio: 2.0
+      ssm_rank_ratio: 2.0
+      ssm_dt_rank: auto
+      ssm_conv: 3
+      ssm_conv_bias: True
+      ssm_drop_rate: 0.0
+      ssm_simple_init: False
+      mlp_ratio: 4.0
+      mlp_drop_rate: 0.0
+      use_checkpoint: False
     stem_channels: 128
     num_stages: 4
     out_channels: [128, 128, 128, 128]
@@ -45,7 +59,7 @@ model:
     dropout_ratio: 0
     num_classes: 19
     conv_seg_kernel_size: 1
-    
+
   auxiliary: True
   auxiliary_heads:
     channels: 128

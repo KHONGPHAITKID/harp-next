@@ -236,6 +236,14 @@ def flatten_probas(probas, labels, ignore=None):
     """
     Flattens predictions in the batch
     """
+    if probas.dim() == 2:
+        # Point-cloud case: [N, C] probas, [N] labels — already flat
+        if ignore is None:
+            return probas, labels
+        valid = (labels != ignore)
+        vprobas = probas[valid.nonzero(as_tuple=False).squeeze(1)]
+        vlabels = labels[valid]
+        return vprobas, vlabels
     if probas.dim() == 3:
         # assumes output of a sigmoid layer
         B, H, W = probas.size()
