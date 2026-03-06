@@ -59,3 +59,61 @@ def test_cap_projection_changes_selection():
     assert scan.proj_range_idx[py0, px0] == 0, (
         f"CAP should keep the high-centerness point (0), got {scan.proj_range_idx[py0, px0]}"
     )
+
+
+import yaml
+from core.harpnext_core.preprocessing.laserscan import SemLaserScan
+
+
+def _make_sem_scan():
+    with open("./datasets/semantickitti/semantic-kitti.yaml") as f:
+        cfg = yaml.safe_load(f)
+    color_dict = cfg["color_map"]
+    scan = SemLaserScan(
+        dataset="semantic_kitti",
+        sem_color_dict=color_dict,
+        project_range=True,
+        range_H=64, range_W=1024,
+        fov_up=3.0, fov_down=-25.0,
+    )
+    return scan
+
+
+def test_compute_cap_scores_stuff_is_zero():
+    """Points with inst_id == 0 must have score 0.0."""
+    scan = _make_sem_scan()
+    n = 100
+    points = np.ones((n, 3), dtype=np.float32)
+    remissions = np.zeros(n, dtype=np.float32)
+    scan.set_points(points, remissions)
+    scan.inst_label = np.zeros(n, dtype=np.uint32)  # all stuff
+    scores = scan._compute_cap_scores()
+    np.testing.assert_array_equal(scores, 0.0)
+
+
+def test_compute_cap_scores_instance_normalized():
+    """Instance points must have scores in [0, 1], with the center point scoring highest."""
+    scan = _make_sem_scan()
+    # 5 points: center + 4 outliers, all in instance 1
+    center = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    outliers = np.array([[5.0, 0, 0], [-5, 0, 0], [0, 5, 0], [0, -5, 0]], dtype=np.float32)
+    points = np.vstack([center[None], outliers])
+    remissions = np.zeros(5, dtype=np.float32)
+    scan.set_points(points, remissions)
+    scan.inst_label = np.ones(5, dtype=np.uint32)  # all same instance
+    scores = scan._compute_cap_scores()
+    assert scores.min() >= 0.0
+    assert scores.max() <= 1.0
+    # The center point (index 0) should have the highest score
+    assert scores[0] == scores.max()
+
+
+def test_compute_cap_scores_small_instance_skipped():
+    """Instance with fewer than 3 points must stay at score 0.0 (no crash)."""
+    scan = _make_sem_scan()
+    points = np.array([[1.0, 0, 0], [2.0, 0, 0]], dtype=np.float32)
+    remissions = np.zeros(2, dtype=np.float32)
+    scan.set_points(points, remissions)
+    scan.inst_label = np.array([7, 7], dtype=np.uint32)  # instance with only 2 pts
+    scores = scan._compute_cap_scores()
+    np.testing.assert_array_equal(scores, 0.0)

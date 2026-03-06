@@ -355,3 +355,33 @@ class SemLaserScan(LaserScan):
     # instances
     self.range_proj_inst_label[proj_range_mask] = self.inst_label[self.proj_range_idx[proj_range_mask]]
     self.range_proj_inst_color[proj_range_mask] = self.inst_color_lut[self.inst_label[self.proj_range_idx[proj_range_mask]]]
+
+  def _compute_cap_scores(self):
+    """Compute per-point centerness scores for CAP projection.
+
+    Instance points receive a Gaussian score based on distance to the bbox
+    center of their instance (normalized to [0, 1] per instance).
+    Stuff points (inst_id == 0) and tiny instances (< 3 pts) receive 0.0.
+
+    Returns:
+        np.ndarray of shape (N,) with float32 scores in [0, 1].
+    """
+    scores = np.zeros(len(self.points), dtype=np.float32)
+    unique_insts = np.unique(self.inst_label)
+    for inst_id in unique_insts:
+      if inst_id == 0:
+        continue  # stuff class — score stays 0
+      mask = self.inst_label == inst_id
+      if mask.sum() < 3:
+        continue  # too few points to define a meaningful center
+      pts = self.points[mask]
+      center = 0.5 * (pts.min(axis=0) + pts.max(axis=0))
+      diff = pts - center
+      g = np.exp(-0.5 * (diff * diff).sum(axis=1))
+      g_min, g_max = g.min(), g.max()
+      if g_max > g_min:
+        g = (g - g_min) / (g_max - g_min)
+      else:
+        g = np.zeros_like(g)
+      scores[mask] = g
+    return scores
