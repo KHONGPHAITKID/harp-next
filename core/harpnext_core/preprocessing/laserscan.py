@@ -333,8 +333,9 @@ class SemLaserScan(LaserScan):
 
     if self.project_range:
       # CAP: reproject with centerness scores so central instance points win
-      # pixel collisions during training. Val/test never call set_label(), so
-      # they always use the depth-only projection from set_points().
+      # pixel collisions. Fires whenever set_label() is called (train, val, and
+      # process_batch_cpu eval paths), which is correct since ground-truth instance
+      # labels are available in all those cases.
       cap_scores = self._compute_cap_scores()
       self.do_range_projection(center_scores=cap_scores)
       self.do_range_label_projection()
