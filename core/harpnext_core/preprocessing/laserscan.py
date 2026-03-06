@@ -165,11 +165,16 @@ class LaserScan:
 
 
   def do_range_projection(self, center_scores=None):
-    """ Project a pointcloud into a spherical projection image.projection.
-        Function takes no arguments because it can be also called externally
-        if the value of the constructor was not set (in case you change your
-        mind about wanting the projection)
+    """ Project a pointcloud into a spherical projection image.
+
+        Args:
+            center_scores: Optional float32 array of shape (N,) with per-point
+                centerness scores in [0, 1]. When provided, collision resolution
+                uses depth / (score + 0.01) as sort key so high-centerness points
+                win. When None (default), falls back to depth-only selection.
     """
+    if center_scores is not None and not (center_scores >= 0).all():
+      raise ValueError("center_scores must be non-negative")
     # laser parameters
     fov_up = self.proj_fov_up / 180.0 * np.pi      # field of view up in rad
     fov_down = self.proj_fov_down / 180.0 * np.pi  # field of view down in rad
