@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -174,5 +175,8 @@ def test_set_label_uses_cap_projection():
             f"CAP should keep the high-centerness point (0), got {cap_winner}"
         )
     else:
-        # Points don't collide with this fov — skip geometric assertion
-        pass
+        pytest.fail(
+            f"Test setup error: point A maps to ({py_a},{px_a}) and point B to ({py_b},{px_b}) "
+            "— they must collide for this test to be meaningful. "
+            "Both points are on the +x axis at y=0,z=0 so this should never happen."
+        )
