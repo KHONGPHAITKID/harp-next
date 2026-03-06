@@ -164,7 +164,7 @@ class LaserScan:
       self.do_range_projection()
 
 
-  def do_range_projection(self):
+  def do_range_projection(self, center_scores=None):
     """ Project a pointcloud into a spherical projection image.projection.
         Function takes no arguments because it can be also called externally
         if the value of the constructor was not set (in case you change your
@@ -209,11 +209,14 @@ class LaserScan:
     # copy of depth in original order
     self.unproj_range = np.copy(depth)
 
-    # order in decreasing depth
+    # order in decreasing sorting criterion (last-write-wins = argmin survives)
     indices = np.arange(depth.shape[0])
-    order = np.argsort(depth)[::-1]
+    if center_scores is not None:
+        sorting_criterion = depth / (center_scores + 0.01)
+    else:
+        sorting_criterion = depth
+    order = np.argsort(sorting_criterion)[::-1]
     depth = depth[order]
-
     indices = indices[order]
     points = self.points[order]
     remission = self.remissions[order]
