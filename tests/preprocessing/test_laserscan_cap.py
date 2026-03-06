@@ -117,3 +117,16 @@ def test_compute_cap_scores_small_instance_skipped():
     scan.inst_label = np.array([7, 7], dtype=np.uint32)  # instance with only 2 pts
     scores = scan._compute_cap_scores()
     np.testing.assert_array_equal(scores, 0.0)
+
+
+def test_compute_cap_scores_degenerate_instance():
+    """Instance where all points are at identical positions (g_max == g_min)
+    must produce all-zero scores without crashing."""
+    scan = _make_sem_scan()
+    # 5 points all at the same location → bbox center == all points → g is constant
+    points = np.tile(np.array([[3.0, 1.0, 0.5]], dtype=np.float32), (5, 1))
+    remissions = np.zeros(5, dtype=np.float32)
+    scan.set_points(points, remissions)
+    scan.inst_label = np.ones(5, dtype=np.uint32)  # all in instance 1
+    scores = scan._compute_cap_scores()
+    np.testing.assert_array_equal(scores, 0.0)
