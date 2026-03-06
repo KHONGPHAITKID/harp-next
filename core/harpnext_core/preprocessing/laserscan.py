@@ -332,8 +332,13 @@ class SemLaserScan(LaserScan):
     assert((self.sem_label + (self.inst_label << 16) == label).all())
 
     if self.project_range:
+      # CAP: reproject with centerness scores so central instance points win
+      # pixel collisions during training. Val/test never call set_label(), so
+      # they always use the depth-only projection from set_points().
+      cap_scores = self._compute_cap_scores()
+      self.do_range_projection(center_scores=cap_scores)
       self.do_range_label_projection()
-    
+
 
   def colorize(self):
     """ Colorize pointcloud with the color of each semantic label

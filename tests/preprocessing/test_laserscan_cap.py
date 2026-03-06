@@ -130,3 +130,49 @@ def test_compute_cap_scores_degenerate_instance():
     scan.inst_label = np.ones(5, dtype=np.uint32)  # all in instance 1
     scores = scan._compute_cap_scores()
     np.testing.assert_array_equal(scores, 0.0)
+
+
+def test_set_label_uses_cap_projection():
+    """After set_label(), proj_range_idx must differ from depth-only when
+    centerness would prefer a different point."""
+    scan = _make_sem_scan()
+
+    # Build a point cloud where two points share the same pixel.
+    # Point A (index 0): farther (depth=8), at center of instance → CAP prefers it.
+    # Point B (index 1): closer (depth=2), stuff class → depth-only prefers it.
+    # Points C-J (indices 2-9): spread around A so A is the bbox center.
+    point_a = np.array([[8.0, 0.0, 0.0]], dtype=np.float32)
+    point_b = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+    spread = np.array([
+        [6.0,  2.0, 0.0], [6.0, -2.0, 0.0],
+        [10.0, 2.0, 0.0], [10.0,-2.0, 0.0],
+        [8.0,  2.0, 0.0], [8.0, -2.0, 0.0],
+        [7.0,  0.0, 0.0], [9.0,  0.0, 0.0],
+    ], dtype=np.float32)
+
+    points = np.vstack([point_a, point_b, spread])
+    n = len(points)
+    remissions = np.zeros(n, dtype=np.float32)
+    scan.set_points(points, remissions)
+
+    py_a, px_a = scan.proj_range_y[0], scan.proj_range_x[0]
+    py_b, px_b = scan.proj_range_y[1], scan.proj_range_x[1]
+
+    if (py_a == py_b) and (px_a == px_b):
+        # Confirm depth-only baseline: point B (closer, depth=2) wins
+        depth_winner = scan.proj_range_idx[py_a, px_a]
+        assert depth_winner == 1, f"Depth baseline: expected point 1, got {depth_winner}"
+
+        # Apply labels: instance 1 for point_a and spread, stuff (inst=0) for point_b
+        inst_ids = np.array([1] + [0] + [1]*8, dtype=np.uint32)
+        sem_ids  = np.array([10]+ [9] + [10]*8, dtype=np.uint32)
+        raw_labels = sem_ids | (inst_ids << 16)
+        scan.set_label(raw_labels)
+
+        cap_winner = scan.proj_range_idx[py_a, px_a]
+        assert cap_winner == 0, (
+            f"CAP should keep the high-centerness point (0), got {cap_winner}"
+        )
+    else:
+        # Points don't collide with this fov — skip geometric assertion
+        pass
