@@ -13,6 +13,13 @@ Files touched:
 - `tests/preprocessing/__init__.py` (new)
 - `tests/preprocessing/test_laserscan_cap.py` (new)
 
-Follow-ups / TODOs:
-- Task 2: Add `_compute_cap_scores()` to `SemLaserScan`
-- Task 3: Wire CAP into `set_label()`
+### CAP full implementation (Tasks 2 & 3)
+
+- Added `SemLaserScan._compute_cap_scores()`: computes per-point centerness scores via bbox midpoint + unit-covariance Gaussian, normalized per-instance to [0,1]; stuff/small instances get 0.0
+- Wired CAP into `SemLaserScan.set_label()`: calls `_compute_cap_scores()` → `do_range_projection(center_scores=...)` → `do_range_label_projection()` so central instance points win pixel collisions whenever ground-truth labels are available
+- Fixed pre-existing `proj_range_mask` bug: `> 0` → `>= 0` so point at index 0 is included
+- 7 unit/integration tests cover all edge cases (stuff, normalized, small instance, degenerate, integration)
+
+Files touched:
+- `core/harpnext_core/preprocessing/laserscan.py`
+- `tests/preprocessing/test_laserscan_cap.py`
