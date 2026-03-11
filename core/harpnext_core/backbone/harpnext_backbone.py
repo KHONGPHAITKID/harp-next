@@ -179,6 +179,9 @@ class HARPNeXtBackbone(nn.Module):
         if self.block_type in ("tinyvim", "tvim"):
             from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
             self.block = HARPNeXtTinyViMBlock
+        elif self.block_type == "hybrid":
+            from core.harpnext_core.backbone.attention_block import HARPNeXtAttentionBlock
+            self.attn_block = HARPNeXtAttentionBlock
         elif self.block_type not in ("convsenext", "convsennext", "convse"):
             raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
         self.output_shape = output_shape
@@ -289,17 +292,29 @@ class HARPNeXtBackbone(nn.Module):
             nn.Sigmoid()
         )
 
-    # residual ConvSENeXt
+    # residual ConvSENeXt / hybrid
     def _make_res_layer(self, block: nn.Module, inplanes, planes, num_blocks, stride, dilation, dw_conv_kernel, dw_conv_bias, index: int = 0):
         downsample = None
         if stride != 1 or inplanes != planes:
             downsample = nn.Sequential(
-                nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False, device= self.device),
+                nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False, device=self.device),
                 nn.BatchNorm2d(planes, eps=1e-3, momentum=0.01, device=self.device),
             )
 
+        # Hybrid mode: use attention blocks for later stages (index >= 2)
+        use_attention = self.block_type == "hybrid" and index >= 2
+
         layers = []
-        if self.block_type in ("tinyvim", "tvim"):
+        if use_attention:
+            layers.append(
+                self.attn_block(
+                    inplanes=inplanes,
+                    planes=planes,
+                    stride=stride,
+                    dilation=dilation,
+                    downsample=downsample,
+                    **self.block_cfg))
+        elif self.block_type in ("tinyvim", "tvim"):
             layers.append(
                 block(
                     inplanes=inplanes,
@@ -319,11 +334,20 @@ class HARPNeXtBackbone(nn.Module):
                     downsample=downsample,
                     norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.01),
                     act_cfg=dict(type='HSwish', inplace=True),
-                    dw_conv_kernel = dw_conv_kernel,
+                    dw_conv_kernel=dw_conv_kernel,
                     dw_conv_bias=dw_conv_bias))
         inplanes = planes
         for _ in range(1, num_blocks):
-            if self.block_type in ("tinyvim", "tvim"):
+            if use_attention:
+                layers.append(
+                    self.attn_block(
+                        inplanes=inplanes,
+                        planes=planes,
+                        stride=1,
+                        dilation=dilation,
+                        downsample=None,
+                        **self.block_cfg))
+            elif self.block_type in ("tinyvim", "tvim"):
                 layers.append(
                     block(
                         inplanes=inplanes,
@@ -342,7 +366,7 @@ class HARPNeXtBackbone(nn.Module):
                         dilation=dilation,
                         norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.01),
                         act_cfg=dict(type='HSwish', inplace=True),
-                        dw_conv_kernel = dw_conv_kernel,
+                        dw_conv_kernel=dw_conv_kernel,
                         dw_conv_bias=dw_conv_bias))
 
         return nn.Sequential(*layers)
