@@ -24,6 +24,8 @@ import torch.nn.functional as F
 import torch_scatter
 from torch import Tensor
 
+from ma.monarch_attention import MonarchAttention, PadType
+
 class ConvSENeXt(nn.Module):
     def __init__(self,
                  inplanes: int,
@@ -106,6 +108,122 @@ class ConvSENeXt(nn.Module):
         return out
  
 
+class MonarchSelfAttention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 4,
+        block_size: int = 16,
+        num_steps: int = 2,
+        pad_type: PadType = PadType.post,
+    ) -> None:
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(
+                f"dim ({dim}) must be divisible by num_heads ({num_heads})."
+            )
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.qkv = nn.Linear(dim, dim * 3)
+        self.attn = MonarchAttention(
+            block_size=block_size, num_steps=num_steps, pad_type=pad_type
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: (B, N, C)
+        bsz, seq_len, dim = x.shape
+        qkv = self.qkv(x).reshape(
+            bsz, seq_len, 3, self.num_heads, self.head_dim
+        )
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        out = self.attn(q, k, v)
+        out = out.permute(0, 2, 1, 3).reshape(bsz, seq_len, dim)
+        return out
+
+
+class ConvMonarchBlock(nn.Module):
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        dilation: int = 1,
+        downsample: Optional[nn.Module] = None,
+        mlp_ratio: int = 4,
+        attn_heads: int = 4,
+        attn_block_size: int = 16,
+        attn_num_steps: int = 2,
+        attn_pad_type: PadType = PadType.post,
+        dw_conv_kernel: int = 7,
+        dw_conv_bias: bool = True,
+    ) -> None:
+        super().__init__()
+
+        # local modeling
+        padding = (dw_conv_kernel // 2) * dilation
+        self.dwconv = nn.Conv2d(
+            inplanes,
+            inplanes,
+            kernel_size=dw_conv_kernel,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=inplanes,
+            bias=dw_conv_bias,
+        )
+        self.proj = (
+            nn.Conv2d(inplanes, planes, kernel_size=1, bias=dw_conv_bias)
+            if inplanes != planes
+            else nn.Identity()
+        )
+
+        self.norm1 = nn.LayerNorm(planes)
+
+        # global modeling
+        self.attn = MonarchSelfAttention(
+            planes,
+            num_heads=attn_heads,
+            block_size=attn_block_size,
+            num_steps=attn_num_steps,
+            pad_type=attn_pad_type,
+        )
+
+        self.norm2 = nn.LayerNorm(planes)
+
+        # feedforward
+        hidden = int(planes * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(planes, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, planes),
+        )
+
+        self.downsample = downsample
+
+    def forward(self, x: Tensor) -> Tensor:
+        shortcut = x
+
+        x = self.dwconv(x)
+        x = self.proj(x)
+
+        bsz, channels, height, width = x.shape
+        x = x.permute(0, 2, 3, 1).contiguous()
+        x = x.view(bsz, height * width, channels)
+
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+
+        x = x.view(bsz, height, width, channels)
+        x = x.permute(0, 3, 1, 2).contiguous()
+
+        if self.downsample is not None:
+            shortcut = self.downsample(shortcut)
+
+        return x + shortcut
+
+
 class EfficientTransformationPipeline(nn.Module):
     def __init__(self, nx, ny):
         super(EfficientTransformationPipeline, self).__init__()
@@ -179,6 +297,8 @@ class HARPNeXtBackbone(nn.Module):
         if self.block_type in ("tinyvim", "tvim"):
             from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
             self.block = HARPNeXtTinyViMBlock
+        elif self.block_type in ("convmonarch", "monarch"):
+            self.block = ConvMonarchBlock
         elif self.block_type not in ("convsenext", "convsennext", "convse"):
             raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
         self.output_shape = output_shape
@@ -309,6 +429,17 @@ class HARPNeXtBackbone(nn.Module):
                     downsample=downsample,
                     index=index,
                     **self.block_cfg))
+        elif self.block_type in ("convmonarch", "monarch"):
+            layers.append(
+                block(
+                    inplanes=inplanes,
+                    planes=planes,
+                    stride=stride,
+                    dilation=dilation,
+                    downsample=downsample,
+                    dw_conv_kernel=dw_conv_kernel,
+                    dw_conv_bias=dw_conv_bias,
+                    **self.block_cfg))
         else:
             layers.append(
                 block(
@@ -332,6 +463,17 @@ class HARPNeXtBackbone(nn.Module):
                         dilation=dilation,
                         downsample=None,
                         index=index,
+                        **self.block_cfg))
+            elif self.block_type in ("convmonarch", "monarch"):
+                layers.append(
+                    block(
+                        inplanes=inplanes,
+                        planes=planes,
+                        stride=1,
+                        dilation=dilation,
+                        downsample=None,
+                        dw_conv_kernel=dw_conv_kernel,
+                        dw_conv_bias=dw_conv_bias,
                         **self.block_cfg))
             else:
                 layers.append(

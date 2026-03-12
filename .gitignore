@@ -11,3 +11,5 @@
 *.txt
 
 logs/
+*__pycache__/
+semantic_kitti_instances/
