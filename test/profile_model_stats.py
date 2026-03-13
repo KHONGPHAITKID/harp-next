@@ -83,18 +83,18 @@ def _build_batch_inputs(
     return {"voxels": {"voxels": voxels, "coors": coords}}
 
 
-def _resolve_netconfig(dataset: str | None, netconfig: str | None) -> str:
+def _resolve_netconfig(dataset: str | None, netconfig: str | None) -> tuple[str, str]:
     if netconfig:
-        return netconfig
+        return netconfig, "(overridden by --netconfig)"
     if dataset is None:
-        return "configs/net/harpnext-nuscenes.yaml"
+        return "configs/net/harpnext-nuscenes.yaml", "nuscenes"
     dataset = dataset.lower()
     if dataset in ("nuscenes", "nu", "nusc"):
-        return "configs/net/harpnext-nuscenes.yaml"
+        return "configs/net/harpnext-nuscenes.yaml", "nuscenes"
     if dataset in ("semantic_kitti", "semantickitti", "kitti"):
-        return "configs/net/harpnext-semantickitti.yaml"
+        return "configs/net/harpnext-semantickitti.yaml", "semantic_kitti"
     if dataset in ("semantic_kitti_convmonarch", "semantickitti_convmonarch"):
-        return "configs/net/harpnext-semantickitti-convmonarch.yaml"
+        return "configs/net/harpnext-semantickitti-convmonarch.yaml", "semantic_kitti_convmonarch"
     raise ValueError(f"Unknown dataset {dataset}")
 
 
@@ -126,7 +126,7 @@ def main():
         args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
-    netconfig_path = _resolve_netconfig(args.dataset, args.netconfig)
+    netconfig_path, preset_label = _resolve_netconfig(args.dataset, args.netconfig)
 
     with open(netconfig_path, "r") as f:
         netconfig = yaml.safe_load(f)
@@ -184,7 +184,7 @@ def main():
     to_giga = 1e9
     print(f"Device: {device.type}")
     print(f"Config: {netconfig_path}")
-    print(f"Dataset preset: {args.dataset}")
+    print(f"Dataset preset: {preset_label}")
     print(f"Attention: {args.attention}")
     print(
         f"Batch: {args.batch_size} H={backbone_cfg['output_shape'][0]} W={backbone_cfg['output_shape'][1]}"
