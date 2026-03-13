@@ -73,7 +73,19 @@ PYTHONPATH=. python3 test/compare_attention.py --height 64 --width 512 --force
 
 Reports **params, runtime (ms), FLOPs, MACs, and peak GPU memory** for one forward pass of a model config.
 
-Run with Monarch attention (default):
+Run with nuScenes preset (default):
+
+```bash
+PYTHONPATH=. python3 test/profile_model_stats.py --batch_size 1
+```
+
+Run with SemanticKITTI preset:
+
+```bash
+PYTHONPATH=. python3 test/profile_model_stats.py --dataset semantic_kitti --batch_size 1
+```
+
+Override config path explicitly:
 
 ```bash
 PYTHONPATH=. python3 test/profile_model_stats.py --netconfig configs/net/harpnext-semantickitti-convmonarch.yaml --batch_size 1

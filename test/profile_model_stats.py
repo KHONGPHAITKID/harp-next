@@ -83,12 +83,32 @@ def _build_batch_inputs(
     return {"voxels": {"voxels": voxels, "coors": coords}}
 
 
+def _resolve_netconfig(dataset: str | None, netconfig: str | None) -> str:
+    if netconfig:
+        return netconfig
+    if dataset is None:
+        return "configs/net/harpnext-nuscenes.yaml"
+    dataset = dataset.lower()
+    if dataset in ("nuscenes", "nu", "nusc"):
+        return "configs/net/harpnext-nuscenes.yaml"
+    if dataset in ("semantic_kitti", "semantickitti", "kitti"):
+        return "configs/net/harpnext-semantickitti.yaml"
+    if dataset in ("semantic_kitti_convmonarch", "semantickitti_convmonarch"):
+        return "configs/net/harpnext-semantickitti-convmonarch.yaml"
+    raise ValueError(f"Unknown dataset {dataset}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--netconfig",
-        default="configs/net/harpnext-semantickitti.yaml",
-        help="Path to network config yaml",
+        default=None,
+        help="Path to network config yaml (overrides --dataset).",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="nuscenes",
+        help="Dataset preset for config: nuscenes or semantic_kitti",
     )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--device", default=None)
@@ -106,7 +126,9 @@ def main():
         args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
-    with open(args.netconfig, "r") as f:
+    netconfig_path = _resolve_netconfig(args.dataset, args.netconfig)
+
+    with open(netconfig_path, "r") as f:
         netconfig = yaml.safe_load(f)
 
     model_cfg = netconfig["model"]
@@ -161,7 +183,8 @@ def main():
 
     to_giga = 1e9
     print(f"Device: {device.type}")
-    print(f"Config: {args.netconfig}")
+    print(f"Config: {netconfig_path}")
+    print(f"Dataset preset: {args.dataset}")
     print(f"Attention: {args.attention}")
     print(
         f"Batch: {args.batch_size} H={backbone_cfg['output_shape'][0]} W={backbone_cfg['output_shape'][1]}"
@@ -179,4 +202,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
