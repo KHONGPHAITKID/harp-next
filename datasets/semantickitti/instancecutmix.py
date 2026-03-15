@@ -38,14 +38,27 @@ class InstanceCutMix:
         for id_class in self.bank.keys():
             os.makedirs(os.path.join(self.rootdir, f"{id_class}"), exist_ok=True)
 
-        # Load instances
+        # Load instance file paths
+        self._bank_paths = {}
         for key in self.bank.keys():
-            self.bank[key] = glob(os.path.join(self.rootdir, f"{key}", "*.bin"))
+            self._bank_paths[key] = glob(os.path.join(self.rootdir, f"{key}", "*.bin"))
+            self.bank[key] = self._bank_paths[key]  # keep paths for test_loaded counts
         self.__loaded__ = self.test_loaded()
         if not self.__loaded__:
             warnings.warn(
                 "Instances must be extracted and saved on disk before training"
             )
+        # Pre-load all instance point clouds into memory to avoid per-sample disk I/O
+        if self.__loaded__:
+            self._bank_data = {}
+            for key in self.bank.keys():
+                self._bank_data[key] = [
+                    np.fromfile(f, dtype=np.float32).reshape((-1, 4))
+                    for f in self._bank_paths[key]
+                ]
+            print(f"InstanceCutMix: pre-loaded {sum(len(v) for v in self._bank_data.values())} instances into memory")
+        else:
+            self._bank_data = None
 
         # Augmentations applied on Instances
         self.rot = tr.Compose(
@@ -127,9 +140,11 @@ class InstanceCutMix:
             for ii in range(nb_to_add):
                 # Point p where to add the instance
                 p = pc_vox[where_surface[min(id_tot, len(where_surface)-1)]]
-                # Extract instance
-                object = self.bank[id_class][which_one[ii]]
-                object = np.fromfile(object, dtype=np.float32).reshape((-1, 4))
+                # Extract instance (from pre-loaded memory bank)
+                if self._bank_data is not None:
+                    object = self._bank_data[id_class][which_one[ii]].copy()
+                else:
+                    object = np.fromfile(self.bank[id_class][which_one[ii]], dtype=np.float32).reshape((-1, 4))
                 # Augment instance
                 label = np.ones((object.shape[0],), dtype=int) * id_class  #was np.int
                 object, label = self.rot(object, label)
