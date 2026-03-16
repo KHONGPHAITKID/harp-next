@@ -553,6 +553,7 @@ class Manager:
         ckpt = torch.load(
             filename,
             map_location=f"cuda:{rank}",
+            weights_only=False,
         )
         self._load_state_from_ckpt(ckpt)
         print(
@@ -565,6 +566,7 @@ class Manager:
         ckpt = torch.load(
             checkpoint_path,
             map_location=f"cuda:{rank}",
+            weights_only=False,
         )
         self._load_state_from_ckpt(ckpt)
         print(
