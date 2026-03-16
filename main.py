@@ -455,7 +455,10 @@ def distributed_training(gpu, ngpus_per_node, args, mainconfig, netconfig):
 
     )
     if args.restart:
-        mng.load_state(best=True) #True
+        if args.resume_checkpoint is not None:
+            mng.load_state_from_path(args.resume_checkpoint)
+        else:
+            mng.load_state(best=(not args.resume_last)) #True
     if args.eval:
         mng.one_epoch(training=False)
         mng._mlflow_log_epoch("val", mng.current_epoch)
@@ -539,6 +542,18 @@ def get_parser():
     )
     parser.add_argument(
         "-r", "--restart", action="store_true", default=False, help="Restart training"
+    )
+    parser.add_argument(
+        "--resume_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint .pth file to resume training from (overrides ckpt_best/ckpt_last)",
+    )
+    parser.add_argument(
+        "--resume_last",
+        action="store_true",
+        default=False,
+        help="Resume from ckpt_last.pth in --log_path instead of ckpt_best.pth",
     )
     parser.add_argument(
         "--seed", default=219, type=int, help="Seed for initializing training"

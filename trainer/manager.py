@@ -329,16 +329,40 @@ class Manager:
             loader = tqdm(loader, bar_format=bar_format)
         
         enumerator = enumerate(loader)
-        dataset = loader.iterable.dataset
+        base_loader = loader.iterable if hasattr(loader, "iterable") else loader
+        dataset = getattr(base_loader, "dataset", None)
+        if dataset is None:
+            dataset = self.loader_train.dataset if training else self.loader_val.dataset
+
+        def _extract_batch_index(batch_data):
+            if isinstance(batch_data, (int, np.integer)):
+                return int(batch_data)
+            if torch.is_tensor(batch_data):
+                if batch_data.numel() == 1:
+                    return int(batch_data.item())
+                return None
+            if isinstance(batch_data, (list, tuple)) and len(batch_data) == 1:
+                item = batch_data[0]
+                if isinstance(item, (int, np.integer)):
+                    return int(item)
+                if torch.is_tensor(item) and item.numel() == 1:
+                    return int(item.item())
+            return None
             
 
         for it, batch in enumerator:
             if self.preproc_gpu:
-                pc, labels = dataset.load_batch_to_gpu(it)
+                batch_idx = _extract_batch_index(batch)
+                if batch_idx is None:
+                    batch_idx = it
+                pc, labels = dataset.load_batch_to_gpu(batch_idx)
                 batch, pc = dataset.process_batch_gpu(pc, labels)
 
             if not training and not self.preproc_gpu:  
-                batch, pc = dataset.process_batch_cpu(it) 
+                batch_idx = _extract_batch_index(batch)
+                if batch_idx is None:
+                    batch_idx = it
+                batch, pc = dataset.process_batch_cpu(batch_idx) 
 
             # Network inputs
             net_inputs = self.get_network_inputs(batch)
@@ -492,16 +516,7 @@ class Manager:
             )
         return confusion_matrix   
 
-    def load_state(self, best=False):
-        filename = self.path_to_ckpt
-        filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
-        rank = 0 if self.rank is None else self.rank
-        _allow_numpy_safe_globals()
-        ckpt = torch.load(
-            filename,
-            map_location=f"cuda:{rank}",
-        )
-##############################################################################################################################################################################################################
+    def _load_state_from_ckpt(self, ckpt):
         state_dict = ckpt["net"]
         try:
             self.net.load_state_dict(state_dict)
@@ -511,9 +526,6 @@ class Manager:
             for key in ckpt["net"].keys():
                 state_dict[key[len("module."):]] = ckpt["net"][key]
             self.net.load_state_dict(state_dict) 
-##############################################################################################################################################################################################################
-        # self.net.load_state_dict(state_dict)        
-
         if ckpt.get("optim") is None:
             warnings.warn("Optimizer state not available")
         else:
@@ -532,8 +544,31 @@ class Manager:
             self.best_miou = ckpt["best_miou"]
         if ckpt.get("epoch") is not None:
             self.current_epoch = ckpt["epoch"] + 1
+
+    def load_state(self, best=False):
+        filename = self.path_to_ckpt
+        filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
+        rank = 0 if self.rank is None else self.rank
+        _allow_numpy_safe_globals()
+        ckpt = torch.load(
+            filename,
+            map_location=f"cuda:{rank}",
+        )
+        self._load_state_from_ckpt(ckpt)
         print(
             f"Checkpoint loaded on {torch.device(rank)} (cuda:{rank}): {self.path_to_ckpt}"
+        )
+
+    def load_state_from_path(self, checkpoint_path):
+        rank = 0 if self.rank is None else self.rank
+        _allow_numpy_safe_globals()
+        ckpt = torch.load(
+            checkpoint_path,
+            map_location=f"cuda:{rank}",
+        )
+        self._load_state_from_ckpt(ckpt)
+        print(
+            f"Checkpoint loaded on {torch.device(rank)} (cuda:{rank}): {checkpoint_path}"
         )
 
     def save_state(self, best=False):

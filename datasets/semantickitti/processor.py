@@ -181,14 +181,7 @@ def getSemanticKITTIProcessor(base):
                 labels = np.zeros((pc.shape[0], 1), dtype=np.uint8)
                 labels_inst = np.zeros((pc.shape[0], 1), dtype=np.uint32)
             else:
-                label_path = os.path.join(
-                    self.labels_root,
-                    "dataset",
-                    "sequences",
-                    os.path.basename(os.path.dirname(os.path.dirname(self.im_idx[index]))),
-                    "labels",
-                    os.path.basename(self.im_idx[index]).replace(".bin", ".label"),
-                )
+                label_path = self.im_idx_label[index]
                 labels_inst = np.fromfile(label_path, dtype=np.uint32).reshape((-1, 1))
                 # print(f"labels_inst is {labels_inst}\n")
                 labels = labels_inst & 0xFFFF  # delete high 16 digits binary

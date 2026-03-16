@@ -125,8 +125,6 @@ class HARPNeXtPCProcessor(Dataset):
         # Add batch_size as a parameter
         self.batch_size = batch_size
 
-        self.batch_indices = 0  # Tracks the count within the current batch
-
         self.frustum_mix = ClusterMix(H=self.range_H,
                                      W=self.range_W, 
                                      fov_up= self.fov_up, 
@@ -200,9 +198,9 @@ class HARPNeXtPCProcessor(Dataset):
 
     def __getitem__(self, index):
         if self.phase == "train" or self.phase == "trainval":
-            if self.batch_indices == self.batch_size:
-                self.batch_indices = 0
-                
+            if self.preproc_gpu:
+                # DataLoader still calls __getitem__; return index-only to avoid CPU work.
+                return index
             # Load original point cloud
             pc_orig, labels_learning, labels_orig, filename, labelname, eval_filename  = self.load_pc(index)
 
@@ -251,7 +249,6 @@ class HARPNeXtPCProcessor(Dataset):
             points_xyzi = np.hstack([self.scan.points, self.scan.remissions[:, None]])
             voxels = torch.tensor(points_xyzi)  # Original points, as voxels in first script
             res_coors = torch.tensor(np.stack([self.scan.proj_range_y, self.scan.proj_range_x], axis=-1), dtype=torch.int64)  # Range image coordinates
-            res_coors = F.pad(res_coors, (1, 0), mode='constant', value=self.batch_indices)
 
             # Get the segmentation labels from the range projection
             # proj_semantic_labels = torch.tensor(self.scan.range_proj_sem_label, dtype=torch.long)
@@ -267,7 +264,6 @@ class HARPNeXtPCProcessor(Dataset):
             'filename': filename,
             'eval_filename': eval_filename
             }
-            self.batch_indices +=1 
 
             return out
 
@@ -279,9 +275,6 @@ class HARPNeXtPCProcessor(Dataset):
 
     # @profile
     def process_batch_cpu(self, index):
-        if self.batch_indices == self.batch_size:
-            self.batch_indices = 0
-            
         # Load original point cloud
         pc_orig, labels_learning, labels_orig, filename, labelname, eval_filename  = self.load_pc(index)
         orig_len = pc_orig.shape[0]
@@ -328,7 +321,6 @@ class HARPNeXtPCProcessor(Dataset):
         points_xyzi = np.hstack([self.scan.points, self.scan.remissions[:, None]])
         voxels = torch.tensor(points_xyzi)  # Original points, as voxels in first script
         res_coors = torch.tensor(np.stack([self.scan.proj_range_y, self.scan.proj_range_x], axis=-1), dtype=torch.int64)  # Range image coordinates
-        res_coors = F.pad(res_coors, (1, 0), mode='constant', value=self.batch_indices)
 
         # Get the segmentation labels from the range projection
         # proj_semantic_labels = torch.tensor(self.scan.range_proj_sem_label, dtype=torch.long)
@@ -345,16 +337,12 @@ class HARPNeXtPCProcessor(Dataset):
         'filename': filename,
         'eval_filename': eval_filename
         }
-        self.batch_indices +=1 
 
         out = self.collate([out])
         return out, pc
     
 
     def load_batch_to_gpu(self, index):
-        if self.batch_indices == self.batch_size:
-            self.batch_indices = 0
-            
         # Load original point cloud
         pc_orig, labels_learning, labels_orig, filename, labelname, eval_filename  = self.load_pc(index)
 
@@ -410,7 +398,9 @@ class HARPNeXtPCProcessor(Dataset):
             points_xyzi = torch.cat([self.scan_gpu.points, self.scan_gpu.remissions[:, None]], dim=-1)  # Concatenate along the last dimension
             voxels = points_xyzi 
             res_coors = torch.stack([self.scan_gpu.proj_range_y, self.scan_gpu.proj_range_x], dim=-1).to(torch.int64)  # Range image coordinates
-            res_coors = F.pad(res_coors, (1, 0), mode='constant', value=self.batch_indices)
+            # Prepend batch index (0) for single-sample GPU preprocessing.
+            batch_id = torch.zeros((res_coors.shape[0], 1), dtype=torch.int64, device=res_coors.device)
+            res_coors = torch.cat([batch_id, res_coors], dim=1)
 
             # Get the segmentation labels from the range projection
             proj_semantic_labels = self.scan_gpu.range_proj_sem_label.to(torch.float32)
@@ -423,7 +413,6 @@ class HARPNeXtPCProcessor(Dataset):
             'proj_labels': proj_semantic_labels,
             'pt_labels': pt_labels
             }
-            self.batch_indices +=1 
             
             return out, pc
 
@@ -437,7 +426,25 @@ class Collate:
         if isinstance(inputs[0], dict):
             output = {}
             for name in inputs[0].keys():
-                if isinstance(inputs[0][name], np.ndarray):
+                if name == "coors":
+                    coors_with_batch = []
+                    for batch_id, sample in enumerate(inputs):
+                        coors = sample[name]
+                        if isinstance(coors, np.ndarray):
+                            coors = torch.tensor(coors, dtype=torch.int64, device=self.device)
+                        elif isinstance(coors, torch.Tensor):
+                            coors = coors.to(self.device).to(torch.int64)
+                        else:
+                            raise TypeError("coors must be a numpy array or torch tensor")
+                        batch_col = torch.full(
+                            (coors.shape[0], 1),
+                            batch_id,
+                            dtype=torch.int64,
+                            device=coors.device,
+                        )
+                        coors_with_batch.append(torch.cat([batch_col, coors], dim=1))
+                    output[name] = torch.cat(coors_with_batch, dim=0)
+                elif isinstance(inputs[0][name], np.ndarray):
                     output[name] = [torch.tensor(input[name], dtype=torch.float32, device=self.device) for input in inputs]
                 elif isinstance(inputs[0][name], torch.Tensor):
                     output[name] = torch.cat([input[name].to(self.device) for input in inputs], dim=0)

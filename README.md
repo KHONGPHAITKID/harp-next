@@ -387,6 +387,44 @@ Predictions are written under `sequences/<seq>/predictions/*.label` inside `--te
 
 You can enable or disable the Instance CutMix and PolarMix augmentations, during the training only on SemanticKITTI, by setting the `instance_cutmix` flag in the `main-config.yaml` file (`True` to enable, `False` to disable). The extracted instances are saved in `/tmp/semantic_kitti_instances/`. Always set to `False` when evaluating the models. 
 
+## Resume Training
+By default, `--restart` resumes from `ckpt_best.pth` inside `--log_path`.
+
+Resume from the last checkpoint in `--log_path`:
+```
+python main.py \
+--net harpnext \
+--dataset semantic_kitti \
+--path_dataset /path/to/SemanticKITTI \
+--mainconfig ./configs/main/main-config.yaml \
+--netconfig ./configs/net/harpnext-semantickitti.yaml \
+--log_path ./logs/harpnext-cutmix-semantickitti-64x512-retrain \
+--gpu 0 \
+--seed 0 \
+--fp16 \
+--restart \
+--resume_last
+```
+
+Resume from an explicit checkpoint file:
+```
+python main.py \
+--net harpnext \
+--dataset semantic_kitti \
+--path_dataset /path/to/SemanticKITTI \
+--mainconfig ./configs/main/main-config.yaml \
+--netconfig ./configs/net/harpnext-semantickitti.yaml \
+--log_path ./logs/harpnext-cutmix-semantickitti-64x512-retrain \
+--gpu 0 \
+--seed 0 \
+--fp16 \
+--restart \
+--resume_checkpoint /path/to/ckpt_epoch_12.pth
+```
+
+Notes:
+- `--checkpoint` is used for eval/test only; it does not control training resume.
+
 
 
 

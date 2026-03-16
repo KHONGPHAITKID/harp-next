@@ -513,7 +513,7 @@ class RangeInterpolation(Transformation):
         order = np.argsort(depth)[::-1]
         proj_idx[proj_y[order], proj_x[order]] = indices[order]
         proj_image[proj_y[order], proj_x[order]] = points[order]
-        proj_mask = (proj_idx > 0).astype(np.int32)
+        proj_mask = (proj_idx >= 0).astype(np.int32)
 
         
         if labels is not None:
@@ -615,7 +615,7 @@ class RangeInterpolationCUDA(Transformation):
 
         proj_idx[proj_y[order], proj_x[order]] = indices[order]
         proj_image[proj_y[order], proj_x[order]] = points[order]
-        proj_mask = (proj_idx > 0).int()
+        proj_mask = (proj_idx >= 0).int()
 
         if labels is not None:
             proj_sem_label = torch.full((self.H, self.W), self.ignore_index, dtype=torch.int32, device=self.device)

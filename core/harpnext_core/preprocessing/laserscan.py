@@ -225,7 +225,7 @@ class LaserScan:
     self.proj_range_xyz[proj_range_y, proj_range_x] = points
     self.proj_range_remission[proj_range_y, proj_range_x] = remission
     self.proj_range_idx[proj_range_y, proj_range_x] = indices
-    self.proj_range_mask = (self.proj_range_idx > 0).astype(np.int32) #.astype(np.float32)
+    self.proj_range_mask = (self.proj_range_idx >= 0).astype(np.int32) #.astype(np.float32)
 
 
 class SemLaserScan(LaserScan):

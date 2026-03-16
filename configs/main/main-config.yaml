@@ -14,7 +14,7 @@
 
 #General Network Config
 dataloader:
-  batch_size: 2 # 4 for nuScenes and 2 for SemanticKITTI  
+  batch_size: 4 # 4 for nuScenes and 2 for SemanticKITTI  
   num_workers: 12
 
 augmentations:
@@ -40,7 +40,7 @@ mlflow:
   enable: true
   tracking_uri: "http://140.245.117.232:5000"
   experiment_name: "harpnext"
-  run_name: "[train] harpnext"
+  run_name: "[train] harpnext_kitti_convmonarch"
   nested: false
   log_checkpoints: false
   log_code_snapshot: false
