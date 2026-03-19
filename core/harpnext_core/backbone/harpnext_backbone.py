@@ -283,7 +283,8 @@ class HARPNeXtBackbone(nn.Module):
                  dw_conv_bias = True,
                  inter_align_corners = True,
                  block_type: str = "convsenext",
-                 block_cfg: Optional[dict] = None) -> None:
+                 block_cfg: Optional[dict] = None,
+                 stage_block_types: Optional[Sequence[str]] = None) -> None:
         super(HARPNeXtBackbone, self).__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -292,15 +293,20 @@ class HARPNeXtBackbone(nn.Module):
             raise KeyError(f'invalid depth {depth} for HARPNeXtBackbone.')
 
         self.block, stage_blocks = self.arch_settings[depth]
-        self.block_type = block_type.lower()
         self.block_cfg = block_cfg or {}
-        if self.block_type in ("tinyvim", "tvim"):
-            from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
-            self.block = HARPNeXtTinyViMBlock
-        elif self.block_type in ("convmonarch", "monarch"):
-            self.block = ConvMonarchBlock
-        elif self.block_type not in ("convsenext", "convsennext", "convse"):
-            raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
+        self.block_type = block_type.lower()
+        self._validate_block_type(self.block_type)
+        if stage_block_types is not None:
+            self.stage_block_types = [bt.lower() for bt in stage_block_types]
+            if len(self.stage_block_types) != num_stages:
+                raise ValueError(
+                    f"stage_block_types length ({len(self.stage_block_types)}) "
+                    f"must match num_stages ({num_stages})."
+                )
+            for bt in self.stage_block_types:
+                self._validate_block_type(bt)
+        else:
+            self.stage_block_types = [self.block_type] * num_stages
         self.output_shape = output_shape
         self.ny = output_shape[0]
         self.nx = output_shape[1]
@@ -325,6 +331,8 @@ class HARPNeXtBackbone(nn.Module):
 
         overall_stride = 1
         for i, num_blocks in enumerate(stage_blocks):
+            stage_block_type = self.stage_block_types[i]
+            stage_block = self._resolve_block_class(stage_block_type)
             stride = strides[i]
             overall_stride = stride * overall_stride
             self.strides.append(overall_stride)
@@ -332,7 +340,8 @@ class HARPNeXtBackbone(nn.Module):
             planes = out_channels[i]
             
             res_layer = self._make_res_layer(
-                block=self.block,
+                block=stage_block,
+                block_type=stage_block_type,
                 inplanes=inplanes,
                 planes=planes,
                 num_blocks=num_blocks,
@@ -366,6 +375,26 @@ class HARPNeXtBackbone(nn.Module):
             self.add_module(point_layer_name, point_fuse_layer)
             self.fuse_layers.append(layer_name)
             self.point_fuse_layers.append(point_layer_name)
+
+    def _validate_block_type(self, block_type: str) -> None:
+        if block_type not in (
+            "tinyvim",
+            "tvim",
+            "convmonarch",
+            "monarch",
+            "convsenext",
+            "convsennext",
+            "convse",
+        ):
+            raise KeyError(f"invalid block_type {block_type} for HARPNeXtBackbone.")
+
+    def _resolve_block_class(self, block_type: str) -> nn.Module:
+        if block_type in ("tinyvim", "tvim"):
+            from core.tinyvim_core.tvimblock import HARPNeXtTinyViMBlock
+            return HARPNeXtTinyViMBlock
+        if block_type in ("convmonarch", "monarch"):
+            return ConvMonarchBlock
+        return ConvSENeXt
 
     #pixels stem
     def _make_stem_layer(self, in_channels, out_channels):
@@ -410,7 +439,7 @@ class HARPNeXtBackbone(nn.Module):
         )
 
     # residual ConvSENeXt
-    def _make_res_layer(self, block: nn.Module, inplanes, planes, num_blocks, stride, dilation, dw_conv_kernel, dw_conv_bias, index: int = 0):
+    def _make_res_layer(self, block: nn.Module, block_type: str, inplanes, planes, num_blocks, stride, dilation, dw_conv_kernel, dw_conv_bias, index: int = 0):
         downsample = None
         if stride != 1 or inplanes != planes:
             downsample = nn.Sequential(
@@ -419,7 +448,7 @@ class HARPNeXtBackbone(nn.Module):
             )
 
         layers = []
-        if self.block_type in ("tinyvim", "tvim"):
+        if block_type in ("tinyvim", "tvim"):
             layers.append(
                 block(
                     inplanes=inplanes,
@@ -429,7 +458,7 @@ class HARPNeXtBackbone(nn.Module):
                     downsample=downsample,
                     index=index,
                     **self.block_cfg))
-        elif self.block_type in ("convmonarch", "monarch"):
+        elif block_type in ("convmonarch", "monarch"):
             layers.append(
                 block(
                     inplanes=inplanes,
@@ -454,7 +483,7 @@ class HARPNeXtBackbone(nn.Module):
                     dw_conv_bias=dw_conv_bias))
         inplanes = planes
         for _ in range(1, num_blocks):
-            if self.block_type in ("tinyvim", "tvim"):
+            if block_type in ("tinyvim", "tvim"):
                 layers.append(
                     block(
                         inplanes=inplanes,
@@ -464,7 +493,7 @@ class HARPNeXtBackbone(nn.Module):
                         downsample=None,
                         index=index,
                         **self.block_cfg))
-            elif self.block_type in ("convmonarch", "monarch"):
+            elif block_type in ("convmonarch", "monarch"):
                 layers.append(
                     block(
                         inplanes=inplanes,
