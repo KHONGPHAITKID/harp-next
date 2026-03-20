@@ -516,7 +516,7 @@ class Manager:
             )
         return confusion_matrix   
 
-    def _load_state_from_ckpt(self, ckpt):
+    def _load_state_from_ckpt(self, ckpt, fresh_schedule=False):
         state_dict = ckpt["net"]
         try:
             self.net.load_state_dict(state_dict)
@@ -526,26 +526,29 @@ class Manager:
             for key in ckpt["net"].keys():
                 state_dict[key[len("module."):]] = ckpt["net"][key]
             self.net.load_state_dict(state_dict) 
-        if ckpt.get("optim") is None:
-            warnings.warn("Optimizer state not available")
+        if fresh_schedule:
+            print("Fresh schedule enabled: skip optimizer/scheduler/scaler state.")
         else:
-            self.optim.load_state_dict(ckpt["optim"])
-        if self.scheduler is not None:
-            if ckpt.get("scheduler") is None:
-                warnings.warn("Scheduler state not available")
+            if ckpt.get("optim") is None:
+                warnings.warn("Optimizer state not available")
             else:
-                self.scheduler.load_state_dict(ckpt["scheduler"])
-        if self.fp16:
-            if ckpt.get("scaler") is None:
-                warnings.warn("Scaler state not available")
-            else:
-                self.scaler.load_state_dict(ckpt["scaler"])
+                self.optim.load_state_dict(ckpt["optim"])
+            if self.scheduler is not None:
+                if ckpt.get("scheduler") is None:
+                    warnings.warn("Scheduler state not available")
+                else:
+                    self.scheduler.load_state_dict(ckpt["scheduler"])
+            if self.fp16:
+                if ckpt.get("scaler") is None:
+                    warnings.warn("Scaler state not available")
+                else:
+                    self.scaler.load_state_dict(ckpt["scaler"])
         if ckpt.get("best_miou") is not None:
             self.best_miou = ckpt["best_miou"]
         if ckpt.get("epoch") is not None:
             self.current_epoch = ckpt["epoch"] + 1
-
-    def load_state(self, best=False):
+ 
+    def load_state(self, best=False, fresh_schedule=False):
         filename = self.path_to_ckpt
         filename += "/ckpt_best.pth" if best else "/ckpt_last.pth"
         rank = 0 if self.rank is None else self.rank
@@ -555,12 +558,12 @@ class Manager:
             map_location=f"cuda:{rank}",
             weights_only=False,
         )
-        self._load_state_from_ckpt(ckpt)
+        self._load_state_from_ckpt(ckpt, fresh_schedule=fresh_schedule)
         print(
             f"Checkpoint loaded on {torch.device(rank)} (cuda:{rank}): {self.path_to_ckpt}"
         )
-
-    def load_state_from_path(self, checkpoint_path):
+ 
+    def load_state_from_path(self, checkpoint_path, fresh_schedule=False):
         rank = 0 if self.rank is None else self.rank
         _allow_numpy_safe_globals()
         ckpt = torch.load(
@@ -568,7 +571,7 @@ class Manager:
             map_location=f"cuda:{rank}",
             weights_only=False,
         )
-        self._load_state_from_ckpt(ckpt)
+        self._load_state_from_ckpt(ckpt, fresh_schedule=fresh_schedule)
         print(
             f"Checkpoint loaded on {torch.device(rank)} (cuda:{rank}): {checkpoint_path}"
         )

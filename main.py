@@ -456,9 +456,13 @@ def distributed_training(gpu, ngpus_per_node, args, mainconfig, netconfig):
     )
     if args.restart:
         if args.resume_checkpoint is not None:
-            mng.load_state_from_path(args.resume_checkpoint)
+            mng.load_state_from_path(
+                args.resume_checkpoint, fresh_schedule=args.fresh_schedule
+            )
         else:
-            mng.load_state(best=(not args.resume_last)) #True
+            mng.load_state(
+                best=(not args.resume_last), fresh_schedule=args.fresh_schedule
+            ) #True
     if args.eval:
         mng.one_epoch(training=False)
         mng._mlflow_log_epoch("val", mng.current_epoch)
@@ -554,6 +558,12 @@ def get_parser():
         action="store_true",
         default=False,
         help="Resume from ckpt_last.pth in --log_path instead of ckpt_best.pth",
+    )
+    parser.add_argument(
+        "--fresh_schedule",
+        action="store_true",
+        default=False,
+        help="When resuming, load only model weights and epoch; reset optimizer/scheduler/scaler.",
     )
     parser.add_argument(
         "--seed", default=219, type=int, help="Seed for initializing training"
