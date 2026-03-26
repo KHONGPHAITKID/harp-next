@@ -85,6 +85,14 @@ range_proj:
 
 train:
   lamda: 1.0
+  soft_pixel:
+    enable: false # recommend true
+    entropy_weight: false # recommend true
+    min_weight: 0.05 # recommend 0.05
+    confidence_threshold: null
+    lovasz_on_confident_only: false
+    boundary_on_confident_only: false
 
 preproc:
   gpu: False  #Set to False when Training (PreProc on CPU)
+

@@ -23,6 +23,7 @@ from tqdm import tqdm
 from torch.cuda.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from utils.metrics.semanticsegmentation import overall_accuracy, fast_hist, per_class_iu, per_class_accuracy
+from utils.loss.soft_pixel import build_soft_pixel_targets, SoftPixelCELoss
 
 import os
 
@@ -111,12 +112,33 @@ class Manager:
         self.netconfig = netconfig
         self.save_frequency = 0
         self.val_frequency = 1
+        self.use_soft_pixel_supervision = False
+        self.soft_pixel_entropy_weight = True
+        self.soft_pixel_min_weight = 0.0
+        self.soft_pixel_confidence_threshold = None
+        self.soft_pixel_lovasz_on_confident_only = False
+        self.soft_pixel_boundary_on_confident_only = False
+        self.soft_pixel_ce = SoftPixelCELoss()
         if mainconfig is not None:
             self.save_frequency = (
                 mainconfig.get("scheduler", {}).get("save_frequency", 0) or 0
             )
             self.val_frequency = (
                 mainconfig.get("scheduler", {}).get("val_frequency", 1) or 0
+            )
+            soft_cfg = mainconfig.get("loss", {}).get("soft_pixel", {})
+            self.use_soft_pixel_supervision = bool(soft_cfg.get("enable", False))
+            self.soft_pixel_entropy_weight = bool(soft_cfg.get("entropy_weight", True))
+            self.soft_pixel_min_weight = float(soft_cfg.get("min_weight", 0.0))
+            conf_thresh = soft_cfg.get("confidence_threshold", None)
+            self.soft_pixel_confidence_threshold = (
+                float(conf_thresh) if conf_thresh is not None else None
+            )
+            self.soft_pixel_lovasz_on_confident_only = bool(
+                soft_cfg.get("lovasz_on_confident_only", False)
+            )
+            self.soft_pixel_boundary_on_confident_only = bool(
+                soft_cfg.get("boundary_on_confident_only", False)
             )
         
         # Monitoring
@@ -367,7 +389,10 @@ class Manager:
             # Network inputs
             net_inputs = self.get_network_inputs(batch)
             # Labels
-            labels = self.get_labels(batch)
+            labels = self.get_labels(
+                batch,
+                net_inputs if (training and self.use_soft_pixel_supervision) else None,
+            )
 
             # Get prediction and loss
             with torch.autocast("cuda", enabled=self.fp16):
@@ -390,11 +415,42 @@ class Manager:
                 if training:
                     lamda = self.netconfig["train"]["lamda"]
                     loss_points = self.loss["ce"](out_losses["HARPNeXtHead.seg_logit"], labels["pt_labels"])
-                    loss_aux_0 = self.loss["ce"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_0.seg_logit"], labels["proj_labels"])
-                    loss_aux_1 = self.loss["ce"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_1.seg_logit"], labels["proj_labels"])
-                    loss_aux_2 = self.loss["ce"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_2.seg_logit"], labels["proj_labels"])
-                    loss_aux_3 = self.loss["ce"](out_losses["AuxHead_3.seg_logit"], labels["proj_labels"]) + 1.5 * self.loss["lovasz"](out_losses["AuxHead_3.seg_logit"], labels["proj_labels"]) + self.loss["bd"](out_losses["AuxHead_3.seg_logit"], labels["proj_labels"])
-                    loss = loss_points + lamda*loss_aux_0 + lamda*loss_aux_1 + lamda*loss_aux_2 + lamda*loss_aux_3
+                    aux_keys = sorted([k for k in out_losses.keys() if k.startswith("AuxHead_")])
+                    aux_losses = []
+                    for key in aux_keys:
+                        aux_logits = out_losses[key]
+                        if self.use_soft_pixel_supervision and "soft_proj_labels" in labels:
+                            ce_target = labels["soft_proj_labels"]
+                            ce_weight = labels["soft_pixel_weight"]
+                            hard_target = labels["hard_proj_labels"]
+                            confident_target = self._apply_pixel_confidence_mask(
+                                hard_target, ce_weight
+                            )
+                            loss_ce = self.soft_pixel_ce(aux_logits, ce_target, ce_weight)
+                            lovasz_target = (
+                                confident_target
+                                if self.soft_pixel_lovasz_on_confident_only
+                                else hard_target
+                            )
+                            boundary_target = (
+                                confident_target
+                                if self.soft_pixel_boundary_on_confident_only
+                                else hard_target
+                            )
+                            loss_aux = (
+                                loss_ce
+                                + 1.5 * self.loss["lovasz"](aux_logits, lovasz_target)
+                                + self.loss["bd"](aux_logits, boundary_target)
+                            )
+                        else:
+                            hard_target = labels["proj_labels"]
+                            loss_aux = (
+                                self.loss["ce"](aux_logits, hard_target)
+                                + 1.5 * self.loss["lovasz"](aux_logits, hard_target)
+                                + self.loss["bd"](aux_logits, hard_target)
+                            )
+                        aux_losses.append(loss_aux)
+                    loss = loss_points + lamda * sum(aux_losses) if aux_losses else loss_points
                 else:
                     loss = self.loss["ce"](out_losses["HARPNeXtHead.seg_logit"], labels["pt_labels"])
 
@@ -536,11 +592,56 @@ class Manager:
 
             return net_inputs
     
+    def _apply_pixel_confidence_mask(self, hard_targets, pixel_weight):
+        if self.soft_pixel_confidence_threshold is None:
+            return hard_targets
+
+        ignore_index = self.netconfig["classif"]["ignore_class"]
+        masked = hard_targets.clone()
+        keep = pixel_weight.squeeze(1) >= self.soft_pixel_confidence_threshold
+        masked[~keep] = ignore_index
+        return masked
+
+    def _build_soft_pixel_labels(self, labels, coors):
+        proj_labels = labels["proj_labels"]
+        pt_labels = labels["pt_labels"]
+        if proj_labels.ndim != 3:
+            raise ValueError(
+                f"Expected proj_labels shape [B,H,W], got {tuple(proj_labels.shape)}"
+            )
+        bsz = int(proj_labels.shape[0])
+        h = int(proj_labels.shape[1])
+        w = int(proj_labels.shape[2])
+        num_classes = int(self.netconfig["classif"]["nb_class"])
+        ignore_index = int(self.netconfig["classif"]["ignore_class"])
+
+        soft_targets, pixel_weight, hard_targets = build_soft_pixel_targets(
+            pt_labels=pt_labels,
+            coors=coors,
+            batch_size=bsz,
+            height=h,
+            width=w,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            min_weight=self.soft_pixel_min_weight,
+        )
+
+        if not self.soft_pixel_entropy_weight:
+            valid = (hard_targets != ignore_index).to(torch.float32).unsqueeze(1)
+            pixel_weight = valid
+
+        labels["soft_proj_labels"] = soft_targets
+        labels["soft_pixel_weight"] = pixel_weight
+        labels["hard_proj_labels"] = hard_targets
+        return labels
+
     #returns the original labels per point, at original resolution
-    def get_labels(self, batch):
+    def get_labels(self, batch, net_inputs=None):
         if self.preproc_gpu:
             proj_range_sem_label = batch["proj_labels"].long().cuda(self.rank, non_blocking=True)
             pt_sem_label = batch["pt_labels"].long().cuda(self.rank, non_blocking=True)
+            if proj_range_sem_label.ndim == 2:
+                proj_range_sem_label = proj_range_sem_label.unsqueeze(0)
         else:
 
             proj_range_sem_label = torch.stack(batch["proj_labels"], dim=0).long().cuda(self.rank, non_blocking=True)
@@ -550,6 +651,9 @@ class Manager:
             'proj_labels': proj_range_sem_label,
             'pt_labels': pt_sem_label
         }
+        if self.use_soft_pixel_supervision and net_inputs is not None:
+            coors = net_inputs["voxels"]["coors"]
+            labels = self._build_soft_pixel_labels(labels, coors)
         return labels
 
     # Upsample to orginal pointcloud resolution, and return out as predictions per class for every point
