@@ -457,6 +457,56 @@ class Manager:
         else:
             return None        
         
+    def _prepare_range_aux(self, batch, device):
+        """Normalize full-resolution range-view aux maps to a canonical dict.
+
+        Expected keys (full resolution):
+          - depth: [B,1,H,W] or [B,H,W] or [H,W]
+          - intensity: same as depth
+          - valid: same as depth, values in {0,1}
+        """
+        if not isinstance(batch, dict):
+            return None
+        range_aux = batch.get("range_aux")
+        if range_aux is None:
+            return None
+
+        def _to_b1hw(x, dtype):
+            t = torch.as_tensor(x, dtype=dtype, device=device)
+            if t.ndim == 2:  # [H,W] -> [1,1,H,W]
+                t = t.unsqueeze(0).unsqueeze(0)
+            elif t.ndim == 3:  # [B,H,W] -> [B,1,H,W]
+                t = t.unsqueeze(1)
+            elif t.ndim == 4:  # [B,1,H,W]
+                pass
+            else:
+                raise ValueError(f"Unexpected range_aux tensor ndim={t.ndim}")
+            return t.contiguous()
+
+        if isinstance(range_aux, list):
+            # CPU collate path: list[dict] per sample
+            depth = torch.stack(
+                [torch.as_tensor(d["depth"], dtype=torch.float32) for d in range_aux], dim=0
+            )
+            intensity = torch.stack(
+                [torch.as_tensor(d["intensity"], dtype=torch.float32) for d in range_aux], dim=0
+            )
+            valid = torch.stack(
+                [torch.as_tensor(d["valid"], dtype=torch.float32) for d in range_aux], dim=0
+            )
+            depth = _to_b1hw(depth, torch.float32)
+            intensity = _to_b1hw(intensity, torch.float32)
+            valid = _to_b1hw(valid, torch.float32)
+        elif isinstance(range_aux, dict):
+            # GPU preproc path: dict of tensors (typically [H,W])
+            depth = _to_b1hw(range_aux["depth"], torch.float32)
+            intensity = _to_b1hw(range_aux["intensity"], torch.float32)
+            valid = _to_b1hw(range_aux["valid"], torch.float32)
+        else:
+            raise ValueError(f"Unexpected range_aux type: {type(range_aux)}")
+
+        return {"depth": depth, "intensity": intensity, "valid": valid}
+
     def get_network_inputs(self, batch):
         if self.preproc_gpu:
             net_inputs = dict()
@@ -465,6 +515,7 @@ class Manager:
             voxel_dict = dict()
             voxel_dict['voxels'] = batch['voxels']  
             voxel_dict['coors'] = batch['coors']    
+            voxel_dict['range_aux'] = self._prepare_range_aux(batch, device=batch['voxels'].device)
 
             net_inputs['voxels'] = voxel_dict
 
@@ -479,6 +530,7 @@ class Manager:
             voxel_dict = dict()
             voxel_dict['voxels'] = batch['voxels'].cuda(self.rank, non_blocking=True)
             voxel_dict['coors'] = batch['coors'].cuda(self.rank, non_blocking=True)
+            voxel_dict['range_aux'] = self._prepare_range_aux(batch, device=voxel_dict['voxels'].device)
 
             net_inputs['voxels'] = voxel_dict
 

@@ -255,12 +255,22 @@ class HARPNeXtPCProcessor(Dataset):
             proj_semantic_labels = self.scan.range_proj_sem_label
             pt_labels = self.scan.sem_label
 
+            # Full-resolution range-view aux maps (used by late-stage RangeMamba blocks)
+            # Keep full resolution here; downsample inside the model with valid-weighted pooling.
+            valid0 = (self.scan.proj_range_idx >= 0).astype(np.float32)
+            depth0 = self.scan.proj_range.astype(np.float32)
+            intensity0 = self.scan.proj_range_remission.astype(np.float32)
+            depth0 = np.where(valid0 > 0, depth0, 0.0).astype(np.float32)
+            intensity0 = np.where(valid0 > 0, intensity0, 0.0).astype(np.float32)
+            range_aux = {"depth": depth0, "intensity": intensity0, "valid": valid0}
+
             out = {
             'points': points_xyzi,
             'voxels': voxels,
             'coors' : res_coors,
             'proj_labels': proj_semantic_labels,
             'pt_labels': pt_labels,
+            'range_aux': range_aux,
             'filename': filename,
             'eval_filename': eval_filename
             }
@@ -327,12 +337,21 @@ class HARPNeXtPCProcessor(Dataset):
         proj_semantic_labels = self.scan.range_proj_sem_label
         pt_labels = self.scan.sem_label
 
+        # Full-resolution range-view aux maps (used by late-stage RangeMamba blocks)
+        valid0 = (self.scan.proj_range_idx >= 0).astype(np.float32)
+        depth0 = self.scan.proj_range.astype(np.float32)
+        intensity0 = self.scan.proj_range_remission.astype(np.float32)
+        depth0 = np.where(valid0 > 0, depth0, 0.0).astype(np.float32)
+        intensity0 = np.where(valid0 > 0, intensity0, 0.0).astype(np.float32)
+        range_aux = {"depth": depth0, "intensity": intensity0, "valid": valid0}
+
         out = {
         'points': points_xyzi,
         'voxels': voxels,
         'coors' : res_coors,
         'proj_labels': proj_semantic_labels,
         'pt_labels': pt_labels,
+        'range_aux': range_aux,
         'orig_len': orig_len,
         'filename': filename,
         'eval_filename': eval_filename
@@ -406,12 +425,19 @@ class HARPNeXtPCProcessor(Dataset):
             proj_semantic_labels = self.scan_gpu.range_proj_sem_label.to(torch.float32)
             pt_labels = self.scan_gpu.sem_label.to(torch.float32)
 
+            # Full-resolution range-view aux maps (used by late-stage RangeMamba blocks)
+            valid0 = (self.scan_gpu.proj_range_idx >= 0).to(torch.float32)
+            depth0 = torch.where(valid0 > 0, self.scan_gpu.proj_range, torch.zeros_like(self.scan_gpu.proj_range))
+            intensity0 = torch.where(valid0 > 0, self.scan_gpu.proj_range_remission, torch.zeros_like(self.scan_gpu.proj_range_remission))
+            range_aux = {"depth": depth0, "intensity": intensity0, "valid": valid0}
+
             out = {
             'points': points_xyzi,
             'voxels': voxels,
             'coors' : res_coors,
             'proj_labels': proj_semantic_labels,
-            'pt_labels': pt_labels
+            'pt_labels': pt_labels,
+            'range_aux': range_aux,
             }
             
             return out, pc

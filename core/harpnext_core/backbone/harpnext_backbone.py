@@ -25,6 +25,7 @@ import torch_scatter
 from torch import Tensor
 
 from ma.monarch_attention import MonarchAttention, PadType
+from core.harpnext_core.backbone.range_mamba import RangeMambaSECore
 
 class ConvSENeXt(nn.Module):
     def __init__(self,
@@ -106,7 +107,109 @@ class ConvSENeXt(nn.Module):
         out = self.activation(out)
 
         return out
- 
+	 
+
+class _PixelStage(nn.Module):
+    """Stage wrapper with a stable forward signature.
+
+    Some stage blocks require range-view aux maps (RangeMamba stages), while
+    baseline stages only take x. This wrapper keeps the backbone loop unchanged.
+    """
+
+    def __init__(self, block: nn.Module, needs_range_aux: bool = False) -> None:
+        super().__init__()
+        self.block = block
+        self.needs_range_aux = needs_range_aux
+
+    def forward(self, x: Tensor, range_aux: Optional[dict] = None) -> Tensor:
+        if self.needs_range_aux:
+            if range_aux is None:
+                raise ValueError("range_aux is required for this stage block")
+            return self.block(x, range_aux)
+        return self.block(x)
+
+
+class RangeMambaStageBlock(nn.Module):
+    """Conv stem + RangeMambaSECore + residual, preserving stage stride/downsample."""
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        dilation: int = 1,
+        downsample: Optional[nn.Module] = None,
+        reduction: int = 16,
+        norm_cfg=dict(type="BN2d", eps=1e-3, momentum=0.01),
+        act_cfg=dict(type="HSwish", inplace=True),
+        dw_conv_kernel: int = 7,
+        dw_conv_bias: bool = True,
+        use_col_mamba: bool = False,
+        range_mamba_cfg: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        range_mamba_cfg = range_mamba_cfg or {}
+
+        # Local conv stem (same layout as ConvSENeXt up to the PW conv output).
+        self.conv_dw = nn.Conv2d(
+            in_channels=inplanes,
+            out_channels=inplanes,
+            kernel_size=dw_conv_kernel,
+            stride=stride,
+            padding=dilation,
+            groups=inplanes,
+            bias=dw_conv_bias,
+            device=device,
+        )
+        self.norm1 = nn.BatchNorm2d(
+            num_features=inplanes, eps=norm_cfg["eps"], momentum=norm_cfg["momentum"], device=device
+        )
+        self.pointwise = nn.Conv2d(
+            in_channels=inplanes,
+            out_channels=planes,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=dw_conv_bias,
+            device=device,
+        )
+        self.norm2 = nn.BatchNorm2d(
+            num_features=planes, eps=norm_cfg["eps"], momentum=norm_cfg["momentum"], device=device
+        )
+        self.activation = nn.Hardswish(inplace=act_cfg["inplace"])
+
+        # RangeMamba context + gating core (stage resolution).
+        self.range_core = RangeMambaSECore(
+            channels=planes,
+            use_col_mamba=use_col_mamba,
+            reduction=range_mamba_cfg.get("reduction", reduction),
+            d_state=range_mamba_cfg.get("d_state", 16),
+            expand=range_mamba_cfg.get("expand", 2),
+            backend=range_mamba_cfg.get("backend", "mamba"),
+        )
+
+        self.downsample = downsample
+
+    def forward(self, x: Tensor, range_aux: dict) -> Tensor:
+        identity = x
+
+        out = self.conv_dw(x)
+        out = self.norm1(out)
+        out = self.activation(out)
+
+        out = self.pointwise(out)
+        out = self.norm2(out)
+
+        out = self.range_core(out, range_aux)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = out + identity
+        out = self.activation(out)
+        return out
+
 
 class MonarchSelfAttention(nn.Module):
     def __init__(
@@ -282,6 +385,11 @@ class HARPNeXtBackbone(nn.Module):
                  dw_conv_kernel = 7,
                  dw_conv_bias = True,
                  inter_align_corners = True,
+                 use_range_mamba_stage3: bool = False,
+                 use_range_mamba_stage4: bool = False,
+                 use_col_mamba_stage3: bool = False,
+                 use_col_mamba_stage4: bool = True,
+                 range_mamba_cfg: Optional[dict] = None,
                  block_type: str = "convsenext",
                  block_cfg: Optional[dict] = None,
                  stage_block_types: Optional[Sequence[str]] = None) -> None:
@@ -310,6 +418,12 @@ class HARPNeXtBackbone(nn.Module):
         self.output_shape = output_shape
         self.ny = output_shape[0]
         self.nx = output_shape[1]
+
+        self.use_range_mamba_stage3 = use_range_mamba_stage3
+        self.use_range_mamba_stage4 = use_range_mamba_stage4
+        self.use_col_mamba_stage3 = use_col_mamba_stage3
+        self.use_col_mamba_stage4 = use_col_mamba_stage4
+        self.range_mamba_cfg = range_mamba_cfg or {}
         assert len(stage_blocks) == len(out_channels) == len(strides) == len(
         dilations) == num_stages, \
         'The length of stage_blocks, out_channels, strides and ' \
@@ -447,6 +561,29 @@ class HARPNeXtBackbone(nn.Module):
                 nn.BatchNorm2d(planes, eps=1e-3, momentum=0.01, device=self.device),
             )
 
+        use_range_mamba = (
+            block_type in ("convsenext", "convsennext", "convse")
+            and (
+                (index == 2 and self.use_range_mamba_stage3)
+                or (index == 3 and self.use_range_mamba_stage4)
+            )
+        )
+
+        if use_range_mamba:
+            use_col_mamba = self.use_col_mamba_stage4 if index == 3 else self.use_col_mamba_stage3
+            stage_block = RangeMambaStageBlock(
+                inplanes=inplanes,
+                planes=planes,
+                stride=stride,
+                dilation=dilation,
+                downsample=downsample,
+                dw_conv_kernel=dw_conv_kernel,
+                dw_conv_bias=dw_conv_bias,
+                use_col_mamba=use_col_mamba,
+                range_mamba_cfg=self.range_mamba_cfg,
+            )
+            return _PixelStage(stage_block, needs_range_aux=True)
+
         layers = []
         if block_type in ("tinyvim", "tvim"):
             layers.append(
@@ -523,6 +660,7 @@ class HARPNeXtBackbone(nn.Module):
         voxel_feats = voxel_dict['voxel_feats']
         voxel_coors = voxel_dict['voxel_coors']
         pts_coors = voxel_dict['coors']
+        range_aux = voxel_dict.get("range_aux", None)
         batch_size = pts_coors[-1, 0].item() + 1
 
         x = self.etp.cluster2pixel(voxel_feats, voxel_coors, batch_size, stride=1)
@@ -542,7 +680,10 @@ class HARPNeXtBackbone(nn.Module):
 
         for i, layer_name in enumerate(self.res_layers):
             res_layer = getattr(self, layer_name)
-            x = res_layer(x)
+            if isinstance(res_layer, _PixelStage):
+                x = res_layer(x, range_aux)
+            else:
+                x = res_layer(x)
 
             # cluster-to-point fusion
             map_point_feats = self.etp.pixel2point(x, pts_coors, stride=self.strides[i])
