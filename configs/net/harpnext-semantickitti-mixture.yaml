@@ -94,5 +94,5 @@ train:
     boundary_on_confident_only: false
 
 preproc:
-  gpu: False #Set to False when Training (PreProc on CPU)
+  gpu: False # GPU preproc supported for training, but can increase VRAM usage
 

@@ -154,7 +154,7 @@ def getSemanticKITTIProcessor(base):
             # Training with instance cutmix
             if self.instance_cutmix:
                 # PolarMix
-                self.polarmix = PolarMix(classes=[1, 2, 4, 5, 6])
+                self.polarmix = PolarMix(classes=[1, 2, 3, 4, 5, 6, 7])
                 # CutMix
                 assert (
                     self.phase != "test" and self.phase != "val"

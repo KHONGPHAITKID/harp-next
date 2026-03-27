@@ -446,3 +446,139 @@ Implement in this order:
 Critical pitfall: the baseline paper already shows adding more stages or more blocks is not the right path, so resist the temptation to stack more RangeMamba blocks.  
 
 ---
+
+# IDEA 2 — Optional training method: soft pixel supervision
+
+The baseline assigns each pixel a **hard pseudo-label** by majority vote over all points projected into that pixel, then uses point-level CE plus pixel-level CE/Lovasz/boundary losses. This is the clean place to improve supervision without changing the network interface. 
+
+## 2.1 What to implement
+
+Replace the hard pixel target with a **soft class histogram** at each pixel:
+
+* build class counts from projected points
+* normalize to probabilities
+* compute a soft cross-entropy or KL loss
+* optionally downweight ambiguous pixels by entropy
+
+Keep:
+
+* point-level CE
+* pixel-level boundary loss
+* Lovasz on hard argmax mask only for stable baselines, or disable Lovasz on ambiguous pixels
+
+## 2.2 File/module breakdown
+
+Suggested files:
+
+* `losses/soft_pixel_labels.py`
+* `losses/soft_pixel_ce.py`
+* `losses/pixel_entropy_weight.py`
+
+### Module A — `SoftPixelLabelBuilder`
+
+**Input**
+
+* `point_labels`: `[sumN]`
+* `proj_idx`: per-point pixel index for the original range image
+* `num_classes`
+* `ignore_index`
+
+**Output**
+
+* `soft_targets`: `[B,num_classes,H,W]`
+* `pixel_weight`: `[B,1,H,W]`
+* `hard_targets`: `[B,H,W]` for compatibility
+
+**Functionality**
+
+* Build a normalized per-pixel class histogram
+* Estimate ambiguity from entropy
+
+**Implementation steps**
+
+1. Initialize zero histogram per pixel and class.
+2. For each labeled point, scatter-add one-hot class to its pixel bin.
+3. Normalize along class dimension.
+4. Compute entropy.
+5. Set `pixel_weight = 1 - entropy / log(num_classes)`.
+6. Keep `hard_targets = argmax(hist)` for Lovasz/boundary compatibility.
+
+**Pseudocode**
+
+```python
+def build_soft_pixel_labels(point_labels, proj_idx, batch_ids, H, W, num_classes, ignore_index):
+    hist = torch.zeros(batch_size, num_classes, H, W, device=point_labels.device)
+
+    valid_pts = point_labels != ignore_index
+    cls_onehot = F.one_hot(point_labels[valid_pts], num_classes=num_classes).float()
+    b, u, v = batch_ids[valid_pts], proj_idx[valid_pts, 0], proj_idx[valid_pts, 1]
+
+    hist.index_put_((b, slice(None), v, u), cls_onehot.T, accumulate=True)  # or custom scatter
+    count = hist.sum(dim=1, keepdim=True).clamp_min(1.0)
+    soft = hist / count
+
+    entropy = -(soft.clamp_min(1e-8).log() * soft).sum(dim=1, keepdim=True)
+    weight = 1.0 - entropy / math.log(num_classes)
+
+    hard = soft.argmax(dim=1)
+    return soft, weight, hard
+```
+
+**Pitfalls**
+
+* Do not collapse batch items together.
+* Ignore unlabeled points before histogramming.
+* Do not use standard `CrossEntropyLoss` with soft targets.
+
+### Module B — `SoftPixelCELoss`
+
+**Input**
+
+* `pixel_logits`: `[B,num_classes,H,W]`
+* `soft_targets`: `[B,num_classes,H,W]`
+* `pixel_weight`: `[B,1,H,W]`
+
+**Output**
+
+* scalar loss
+
+**Functionality**
+
+* Soft CE or KL with per-pixel weighting
+
+**Pseudocode**
+
+```python
+def soft_pixel_ce(pixel_logits, soft_targets, pixel_weight):
+    logp = F.log_softmax(pixel_logits, dim=1)
+    ce = -(soft_targets * logp).sum(dim=1, keepdim=True)
+    return (ce * pixel_weight).sum() / pixel_weight.sum().clamp_min(1.0)
+```
+
+**Pitfalls**
+
+* `CrossEntropyLoss` with class indices is wrong here.
+* Clamp probabilities before `log`.
+* Keep loss scale similar to the original pixel CE.
+
+## 2.3 Loss integration
+
+Baseline loss:
+[
+L = L^{pt}*{ce} + \lambda (L^{px}*{ce} + \beta L^{px}*{ls} + L^{px}*{bd})
+]
+with hard majority pseudo-labels. Keep the same overall structure first; replace only `L_px_ce` with the soft-target version, and optionally apply boundary/Lovasz only on confident or hard targets. 
+
+**Recommended first version**
+
+* `L_pt_ce`: unchanged
+* `L_px_soft_ce`: new
+* `L_px_bd`: unchanged
+* `L_px_lovasz`: use `hard_targets` and optionally multiply by a confidence mask
+
+**Pitfalls**
+
+* Do not remove point-level supervision.
+* Do not apply Lovasz directly to dense soft histograms unless you intentionally re-derive the loss.
+
+---

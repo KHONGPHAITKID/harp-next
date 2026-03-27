@@ -523,54 +523,35 @@ class RangeInterpolation(Transformation):
             proj_sem_label[proj_y[order],
                            proj_x[order]] = labels[order]
 
-        # Interpolate missing points
-        interpolated_points = []
-        interpolated_labels = []
+        # Interpolate missing pixels where both immediate horizontal neighbors are valid.
+        # This vectorized path preserves edge handling (no wraparound across x=0/W-1).
+        mask_bool = proj_mask.astype(bool)
+        left_valid = np.zeros_like(mask_bool, dtype=bool)
+        right_valid = np.zeros_like(mask_bool, dtype=bool)
+        left_valid[:, 1:] = mask_bool[:, :-1]
+        right_valid[:, :-1] = mask_bool[:, 1:]
+        interp_mask = (~mask_bool) & left_valid & right_valid
 
-        # scan all the pixels
-        for y in range(self.H):
-            for x in range(self.W):
-                # check whether the current pixel is valid
-                # if valid, just skip this pixel
-                if proj_mask[y, x]:
-                    continue
+        if np.any(interp_mask):
+            left_points = np.zeros_like(proj_image, dtype=np.float32)
+            right_points = np.zeros_like(proj_image, dtype=np.float32)
+            left_points[:, 1:] = proj_image[:, :-1]
+            right_points[:, :-1] = proj_image[:, 1:]
+            mean_points = (left_points + right_points) * 0.5
+            proj_image[interp_mask] = mean_points[interp_mask]
+            points = np.concatenate((points, mean_points[interp_mask]), axis=0)
 
-                if (x - 1 >= 0) and (x + 1 < self.W):
-                    # only when both of right and left pixels are valid,
-                    # the interpolated points will be calculated
-                    if proj_mask[y, x - 1] and proj_mask[y, x + 1]:
-                        # calculated the potential points
-                        mean_points = (proj_image[y, x - 1] +
-                                       proj_image[y, x + 1]) / 2
-                        # change the current pixel to be valid
-                        proj_mask[y, x] = 1
-                        proj_image[y, x] = mean_points
-                        interpolated_points.append(mean_points)
-
-                        if labels is not None:
-                            if proj_sem_label[y,
-                                              x - 1] == proj_sem_label[y,
-                                                                       x + 1]:
-                                # if both pixels share the same semantic label,
-                                # then just copy the semantic label
-                                cur_label = proj_sem_label[y, x - 1]
-                            else:
-                                # if they have different labels, we consider it
-                                # as boundary and set it as ignored label
-                                cur_label = self.ignore_index
-                            proj_sem_label[y, x] = cur_label
-                            interpolated_labels.append(cur_label)
-
-        # concatenate all the interpolated points and labels
-        if len(interpolated_points) > 0:
-            interpolated_points = np.array(
-                interpolated_points, dtype=np.float32)
-            points = np.concatenate((points, interpolated_points),
-                                          axis=0)
-
-        if labels is not None:
-            interpolated_labels = np.array(interpolated_labels, dtype=np.int64)
-            labels = np.concatenate((labels, interpolated_labels), axis=0)
+            if labels is not None:
+                left_labels = np.full_like(proj_sem_label, self.ignore_index, dtype=np.int64)
+                right_labels = np.full_like(proj_sem_label, self.ignore_index, dtype=np.int64)
+                left_labels[:, 1:] = proj_sem_label[:, :-1]
+                right_labels[:, :-1] = proj_sem_label[:, 1:]
+                interp_labels = np.where(
+                    left_labels == right_labels,
+                    left_labels,
+                    self.ignore_index,
+                )
+                labels = np.concatenate((labels, interp_labels[interp_mask]), axis=0)
         
         return points, labels
 

@@ -356,34 +356,36 @@ class Manager:
         if dataset is None:
             dataset = self.loader_train.dataset if training else self.loader_val.dataset
 
-        def _extract_batch_index(batch_data):
+        def _extract_batch_indices(batch_data):
             if isinstance(batch_data, (int, np.integer)):
-                return int(batch_data)
+                return [int(batch_data)]
             if torch.is_tensor(batch_data):
-                if batch_data.numel() == 1:
-                    return int(batch_data.item())
-                return None
-            if isinstance(batch_data, (list, tuple)) and len(batch_data) == 1:
-                item = batch_data[0]
-                if isinstance(item, (int, np.integer)):
-                    return int(item)
-                if torch.is_tensor(item) and item.numel() == 1:
-                    return int(item.item())
+                return [int(x) for x in batch_data.reshape(-1).tolist()]
+            if isinstance(batch_data, (list, tuple)):
+                out = []
+                for item in batch_data:
+                    if isinstance(item, (int, np.integer)):
+                        out.append(int(item))
+                    elif torch.is_tensor(item):
+                        out.extend(int(x) for x in item.reshape(-1).tolist())
+                return out if out else None
             return None
             
 
         for it, batch in enumerator:
             if self.preproc_gpu:
-                batch_idx = _extract_batch_index(batch)
-                if batch_idx is None:
-                    batch_idx = it
-                pc, labels = dataset.load_batch_to_gpu(batch_idx)
+                batch_indices = _extract_batch_indices(batch)
+                if not batch_indices:
+                    batch_indices = [it]
+                pc, labels = dataset.load_batch_to_gpu(batch_indices)
                 batch, pc = dataset.process_batch_gpu(pc, labels)
 
             if not training and not self.preproc_gpu:  
-                batch_idx = _extract_batch_index(batch)
-                if batch_idx is None:
+                batch_indices = _extract_batch_indices(batch)
+                if not batch_indices:
                     batch_idx = it
+                else:
+                    batch_idx = int(batch_indices[0])
                 batch, pc = dataset.process_batch_cpu(batch_idx) 
 
             # Network inputs

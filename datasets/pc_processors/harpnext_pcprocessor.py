@@ -361,14 +361,33 @@ class HARPNeXtPCProcessor(Dataset):
         return out, pc
     
 
-    def load_batch_to_gpu(self, index):
+    def _normalize_indices(self, index):
+        if isinstance(index, (int, np.integer)):
+            return [int(index)]
+        if torch.is_tensor(index):
+            if index.numel() == 0:
+                return []
+            return [int(x) for x in index.reshape(-1).tolist()]
+        if isinstance(index, (list, tuple)):
+            out = []
+            for item in index:
+                if isinstance(item, (int, np.integer)):
+                    out.append(int(item))
+                elif torch.is_tensor(item):
+                    out.extend(int(x) for x in item.reshape(-1).tolist())
+                else:
+                    raise TypeError(f"Unsupported index element type: {type(item)}")
+            return out
+        raise TypeError(f"Unsupported index type: {type(index)}")
+
+    def _load_single_sample_to_gpu(self, index):
         # Load original point cloud
-        pc_orig, labels_learning, labels_orig, filename, labelname, eval_filename  = self.load_pc(index)
+        pc_orig, _, labels_orig, _, _, _ = self.load_pc(index)
 
         # Randomly sample a point cloud from the dataset for mixing
         if self.train_augmentations is not None:
             mix_index = np.random.randint(0, self.__len__())
-            mix_pc_orig, _, mix_labels, _, _, _  = self.load_pc(mix_index)
+            mix_pc_orig, _, mix_labels, _, _, _ = self.load_pc(mix_index)
             mix_pc = self.prepare_input_features(mix_pc_orig)
 
         # Prepare input feature
@@ -387,26 +406,52 @@ class HARPNeXtPCProcessor(Dataset):
             pc, labels = self.frustum_mix(pc, labels, mix_pc, mix_labels)
             pc, labels = self.instance_copy(pc, labels, mix_pc, mix_labels)
 
-        on_gpu_data = self.collate([{'pc': pc}])
-
-        pc = on_gpu_data['pc'][0]
-
-        # move labels data outside Collate to explicitely sepecify dtype=torch.int32
-        labels = torch.tensor(labels, dtype=torch.int32).cuda(self.rank, non_blocking=True)  
-
+        device = torch.device(f"cuda:{self.rank}")
+        pc = torch.as_tensor(pc, dtype=torch.float32, device=device)
+        labels = torch.as_tensor(labels, dtype=torch.int32, device=device)
         return pc, labels
+
+    def load_batch_to_gpu(self, index):
+        indices = self._normalize_indices(index)
+        if not indices:
+            raise ValueError("Empty index batch received for GPU preprocessing")
+
+        pcs = []
+        labels = []
+        for idx in indices:
+            pc_i, labels_i = self._load_single_sample_to_gpu(idx)
+            pcs.append(pc_i)
+            labels.append(labels_i)
+        return pcs, labels
         
     def process_batch_gpu(self, pc, labels):
-            pc, labels = self.range_interpolation(pc, labels)
+        pcs = pc if isinstance(pc, (list, tuple)) else [pc]
+        labels_list = labels if isinstance(labels, (list, tuple)) else [labels]
+        if len(pcs) != len(labels_list):
+            raise ValueError(
+                f"Mismatched GPU preproc inputs: len(pc)={len(pcs)} vs len(labels)={len(labels_list)}"
+            )
 
-            points = pc[:, 0:3]    # get xyz
-            remissions = pc[:, 3]  # get remission
+        points_list = []
+        voxels_list = []
+        coors_list = []
+        proj_labels_list = []
+        pt_labels_list = []
+        depth_list = []
+        intensity_list = []
+        valid_list = []
+
+        for batch_id, (pc_i, labels_i) in enumerate(zip(pcs, labels_list)):
+            pc_i, labels_i = self.range_interpolation(pc_i, labels_i)
+
+            points = pc_i[:, 0:3]    # get xyz
+            remissions = pc_i[:, 3]  # get remission
 
             # set points in scan and do projections
             self.scan_gpu.set_points(points, remissions)  
 
             # set labels in scan and do labels projection
-            self.scan_gpu.set_label(labels)
+            self.scan_gpu.set_label(labels_i)
 
             # map unused classes to used classes (also for projection)
             # Do it here and make ignore index 255 for noise, since labels_orig is considered and not labels_learning
@@ -414,33 +459,49 @@ class HARPNeXtPCProcessor(Dataset):
             self.scan_gpu.range_proj_sem_label = self.map(self.scan_gpu.range_proj_sem_label, self.learning_map)
 
             # Get the projected points, coordinates, and relevant information
-            points_xyzi = torch.cat([self.scan_gpu.points, self.scan_gpu.remissions[:, None]], dim=-1)  # Concatenate along the last dimension
-            voxels = points_xyzi 
-            res_coors = torch.stack([self.scan_gpu.proj_range_y, self.scan_gpu.proj_range_x], dim=-1).to(torch.int64)  # Range image coordinates
-            # Prepend batch index (0) for single-sample GPU preprocessing.
-            batch_id = torch.zeros((res_coors.shape[0], 1), dtype=torch.int64, device=res_coors.device)
-            res_coors = torch.cat([batch_id, res_coors], dim=1)
+            points_xyzi = torch.cat([self.scan_gpu.points, self.scan_gpu.remissions[:, None]], dim=-1)
+            voxels = points_xyzi
+            res_coors = torch.stack([self.scan_gpu.proj_range_y, self.scan_gpu.proj_range_x], dim=-1).to(torch.int64)
+            batch_col = torch.full(
+                (res_coors.shape[0], 1),
+                batch_id,
+                dtype=torch.int64,
+                device=res_coors.device,
+            )
+            res_coors = torch.cat([batch_col, res_coors], dim=1)
 
             # Get the segmentation labels from the range projection
             proj_semantic_labels = self.scan_gpu.range_proj_sem_label.to(torch.float32)
-            pt_labels = self.scan_gpu.sem_label.to(torch.float32)
+            pt_labels = self.scan_gpu.sem_label.to(torch.float32).reshape(-1)
 
             # Full-resolution range-view aux maps (used by late-stage RangeMamba blocks)
             valid0 = (self.scan_gpu.proj_range_idx >= 0).to(torch.float32)
             depth0 = torch.where(valid0 > 0, self.scan_gpu.proj_range, torch.zeros_like(self.scan_gpu.proj_range))
             intensity0 = torch.where(valid0 > 0, self.scan_gpu.proj_range_remission, torch.zeros_like(self.scan_gpu.proj_range_remission))
-            range_aux = {"depth": depth0, "intensity": intensity0, "valid": valid0}
 
-            out = {
-            'points': points_xyzi,
-            'voxels': voxels,
-            'coors' : res_coors,
-            'proj_labels': proj_semantic_labels,
-            'pt_labels': pt_labels,
-            'range_aux': range_aux,
-            }
-            
-            return out, pc
+            points_list.append(points_xyzi)
+            voxels_list.append(voxels)
+            coors_list.append(res_coors)
+            proj_labels_list.append(proj_semantic_labels)
+            pt_labels_list.append(pt_labels)
+            depth_list.append(depth0)
+            intensity_list.append(intensity0)
+            valid_list.append(valid0)
+
+        out = {
+            'points': torch.cat(points_list, dim=0),
+            'voxels': torch.cat(voxels_list, dim=0),
+            'coors': torch.cat(coors_list, dim=0),
+            'proj_labels': torch.stack(proj_labels_list, dim=0),
+            'pt_labels': torch.cat(pt_labels_list, dim=0),
+            'range_aux': {
+                'depth': torch.stack(depth_list, dim=0),
+                'intensity': torch.stack(intensity_list, dim=0),
+                'valid': torch.stack(valid_list, dim=0),
+            },
+        }
+        
+        return out, pcs
 
         
 class Collate:
@@ -488,19 +549,27 @@ class MapLabels:
         self.misc = misc
         self.device = device
         self.rank = rank
+        self._lookup_cache = {}
 
     def __call__(self, label, mapdict):
-        # Convert the mapdict to a tensor or array where the index represents the key, and the value at that index is the map value
-        max_key = max(mapdict.keys())
-        if self.device == 'cuda':
-            lookup = torch.zeros(max_key + 1, dtype=torch.int).cuda(self.rank, non_blocking=True)
-        elif self.device == 'cpu':
-            lookup = np.zeros(max_key + 1, dtype=int)
-        else:
-            raise Exception("device can only be set to \'cuda\' or \'cpu\'")
-        # Fill the lookup tensor with the mapped values
-        for key, value in mapdict.items():
-            lookup[key] = value
+        # Build/cache lookup once for repeated use with the same mapping.
+        cache_key = id(mapdict)
+        lookup = self._lookup_cache.get(cache_key)
+
+        if lookup is None:
+            max_key = max(mapdict.keys())
+            if self.device == 'cuda':
+                lookup = torch.zeros(
+                    max_key + 1, dtype=torch.int32, device=f"cuda:{self.rank}"
+                )
+            elif self.device == 'cpu':
+                lookup = np.zeros(max_key + 1, dtype=np.int32)
+            else:
+                raise Exception("device can only be set to 'cuda' or 'cpu'")
+
+            for key, value in mapdict.items():
+                lookup[key] = value
+            self._lookup_cache[cache_key] = lookup
 
         # Use tensor indexing to map the array values
         mapped_tensor = lookup[label]

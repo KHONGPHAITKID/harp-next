@@ -25,6 +25,7 @@ import torch.nn as nn
 import random
 import warnings
 import argparse
+import hashlib
 import numpy as np
 try:
     from torch.serialization import add_safe_globals as _torch_add_safe_globals
@@ -80,6 +81,121 @@ def load_configs(mainfile, netfile):
         netconfig = yaml.safe_load(nf)
 
     return mainconfig, netconfig
+
+
+def _resolve_sampling_class_weights(class_weights_cfg, class_names):
+    if not isinstance(class_weights_cfg, dict):
+        raise ValueError("rare_class_sampling.class_weights must be a mapping")
+
+    name_to_id = {name: idx for idx, name in enumerate(class_names)}
+    resolved = {}
+    for raw_key, raw_weight in class_weights_cfg.items():
+        if isinstance(raw_key, str) and raw_key in name_to_id:
+            class_id = name_to_id[raw_key]
+        else:
+            class_id = int(raw_key)
+            if class_id < 0 or class_id >= len(class_names):
+                raise ValueError(
+                    f"Unknown rare-class sampling id {class_id}. "
+                    f"Valid ids are 0..{len(class_names) - 1}."
+                )
+        weight = float(raw_weight)
+        if weight <= 0:
+            raise ValueError(
+                f"rare_class_sampling weight for class {raw_key} must be > 0"
+            )
+        resolved[class_id] = weight
+    return resolved
+
+
+def _build_semantickitti_weighted_sampler(train_dataset, mainconfig):
+    sampler_cfg = (
+        mainconfig.get("dataloader", {})
+        .get("rare_class_sampling", {})
+    )
+    if not sampler_cfg.get("enable", False):
+        return None
+
+    if not hasattr(train_dataset, "im_idx_label") or not hasattr(train_dataset, "learning_map"):
+        warnings.warn(
+            "rare_class_sampling is only supported for datasets exposing "
+            "SemanticKITTI-style label paths and learning_map. Falling back to shuffle."
+        )
+        return None
+
+    base_weight = float(sampler_cfg.get("base_weight", 1.0))
+    max_weight = sampler_cfg.get("max_weight", None)
+    max_weight = float(max_weight) if max_weight is not None else None
+    if base_weight <= 0:
+        raise ValueError("rare_class_sampling.base_weight must be > 0")
+    if max_weight is not None and max_weight < base_weight:
+        raise ValueError("rare_class_sampling.max_weight must be >= base_weight")
+
+    class_names = train_dataset.CLASS_NAME
+    class_weights = _resolve_sampling_class_weights(
+        sampler_cfg.get("class_weights", {}),
+        class_names,
+    )
+    if not class_weights:
+        warnings.warn(
+            "rare_class_sampling is enabled but no class_weights were provided. "
+            "Falling back to shuffle."
+        )
+        return None
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "rare_class_sampling")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_payload = {
+        "phase": getattr(train_dataset, "phase", "train"),
+        "size": len(train_dataset),
+        "first_label": train_dataset.im_idx_label[0] if len(train_dataset) > 0 else "",
+        "last_label": train_dataset.im_idx_label[-1] if len(train_dataset) > 0 else "",
+        "base_weight": base_weight,
+        "max_weight": max_weight,
+        "class_weights": sorted(class_weights.items()),
+    }
+    cache_key = hashlib.sha1(repr(cache_payload).encode("utf-8")).hexdigest()[:16]
+    cache_path = os.path.join(cache_dir, f"semkitti_sampler_{cache_key}.npy")
+
+    if os.path.isfile(cache_path):
+        weights = np.load(cache_path)
+    else:
+        learning_map = train_dataset.learning_map
+        max_raw_label = max(int(key) for key in learning_map.keys())
+        learning_lut = np.full((max_raw_label + 1,), 255, dtype=np.int16)
+        for raw_label, mapped_label in learning_map.items():
+            learning_id = int(mapped_label) - 1
+            if learning_id < 0:
+                learning_id = 255
+            learning_lut[int(raw_label)] = learning_id
+
+        weights = np.full((len(train_dataset),), base_weight, dtype=np.float32)
+        for idx, label_path in enumerate(train_dataset.im_idx_label):
+            raw_labels = np.fromfile(label_path, dtype=np.uint32) & 0xFFFF
+            learning_labels = learning_lut[raw_labels]
+            present_classes = set(np.unique(learning_labels).tolist())
+
+            sample_weight = base_weight
+            for class_id, extra_weight in class_weights.items():
+                if class_id in present_classes:
+                    sample_weight += extra_weight
+            if max_weight is not None:
+                sample_weight = min(sample_weight, max_weight)
+            weights[idx] = sample_weight
+
+        np.save(cache_path, weights)
+
+    targeted_names = ", ".join(class_names[class_id] for class_id in sorted(class_weights))
+    print(
+        "rare_class_sampling enabled: "
+        f"{targeted_names} | min={weights.min():.2f}, max={weights.max():.2f}, "
+        f"mean={weights.mean():.2f}"
+    )
+    return torch.utils.data.WeightedRandomSampler(
+        weights=torch.as_tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True,
+    )
 
 
 def get_train_augmentations(args, mainconfig, netconfig):
@@ -144,12 +260,27 @@ def get_datasets(netconfig, args):
 
 
 def get_dataloader(train_dataset, val_dataset, args, mainconfig):
+    dataloader_cfg = mainconfig.get("dataloader", {})
+    num_workers = int(args.workers)
+    extra_loader_kwargs = {}
+    if num_workers > 0:
+        extra_loader_kwargs["persistent_workers"] = bool(
+            dataloader_cfg.get("persistent_workers", False)
+        )
+        prefetch_factor = dataloader_cfg.get("prefetch_factor", None)
+        if prefetch_factor is not None:
+            extra_loader_kwargs["prefetch_factor"] = int(prefetch_factor)
 
     if args.distributed:
+        if dataloader_cfg.get("rare_class_sampling", {}).get("enable", False):
+            warnings.warn(
+                "rare_class_sampling is currently only supported for non-distributed "
+                "training. Falling back to DistributedSampler."
+            )
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     else:
-        train_sampler = None
+        train_sampler = _build_semantickitti_weighted_sampler(train_dataset, mainconfig)
         val_sampler = None
 
     if Collate_fn is not None:
@@ -162,6 +293,7 @@ def get_dataloader(train_dataset, val_dataset, args, mainconfig):
             sampler=train_sampler,
             drop_last=True,
             collate_fn=Collate_fn(),
+            **extra_loader_kwargs,
         )
 
         val_loader = torch.utils.data.DataLoader(
@@ -172,7 +304,9 @@ def get_dataloader(train_dataset, val_dataset, args, mainconfig):
             pin_memory=True,
             sampler=val_sampler,
             drop_last=False,
-            collate_fn=Collate_fn())
+            collate_fn=Collate_fn(),
+            **extra_loader_kwargs,
+        )
     else:
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -181,7 +315,8 @@ def get_dataloader(train_dataset, val_dataset, args, mainconfig):
             num_workers=args.workers,
             pin_memory=True,
             sampler=train_sampler,
-            drop_last=True
+            drop_last=True,
+            **extra_loader_kwargs,
         )
 
         val_loader = torch.utils.data.DataLoader(
@@ -191,7 +326,8 @@ def get_dataloader(train_dataset, val_dataset, args, mainconfig):
         num_workers=args.workers,
         pin_memory=True,
         sampler=val_sampler,
-        drop_last=False
+        drop_last=False,
+        **extra_loader_kwargs,
         )
 
     return train_loader, val_loader, train_sampler
@@ -226,6 +362,17 @@ def get_test_dataset(netconfig, args, mainconfig):
 
 
 def get_test_dataloader(test_dataset, args, mainconfig):
+    dataloader_cfg = mainconfig.get("dataloader", {})
+    num_workers = int(args.workers)
+    extra_loader_kwargs = {}
+    if num_workers > 0:
+        extra_loader_kwargs["persistent_workers"] = bool(
+            dataloader_cfg.get("persistent_workers", False)
+        )
+        prefetch_factor = dataloader_cfg.get("prefetch_factor", None)
+        if prefetch_factor is not None:
+            extra_loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+
     if Collate_fn is not None:
         test_loader = torch.utils.data.DataLoader(
             test_dataset,
@@ -235,6 +382,7 @@ def get_test_dataloader(test_dataset, args, mainconfig):
             pin_memory=True,
             drop_last=False,
             collate_fn=Collate_fn(),
+            **extra_loader_kwargs,
         )
     else:
         test_loader = torch.utils.data.DataLoader(
@@ -244,6 +392,7 @@ def get_test_dataloader(test_dataset, args, mainconfig):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False,
+            **extra_loader_kwargs,
         )
     return test_loader
 

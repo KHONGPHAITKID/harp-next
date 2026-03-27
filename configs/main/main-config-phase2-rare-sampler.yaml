@@ -1,23 +1,36 @@
 # Copyright 2025 CEA LIST - Samir Abou Haidar
-
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#General Network Config
+# Phase-2 config: same baseline settings, plus rare-class scan oversampling.
 dataloader:
-  batch_size: 2 # 4 for nuScenes and 2 for SemanticKITTI  
+  batch_size: 2 # 4 for nuScenes and 2 for SemanticKITTI
   num_workers: 8 # set based on CPU cores (try 8-16)
   persistent_workers: true # effective only when num_workers > 0
   prefetch_factor: 2 # effective only when num_workers > 0
+  rare_class_sampling:
+    enable: true
+    base_weight: 1.0
+    max_weight: 8.0
+    class_weights:
+      bicycle: 2.0
+      motorcycle: 4.0
+      truck: 5.0
+      other-vehicle: 3.0
+      person: 1.5
+      bicyclist: 2.0
+      motorcyclist: 4.0
+      other-ground: 2.0
 
 augmentations:
   instance_cutmix: False # set True when Training if needed, False when validating (only for SemanticKITTI)
@@ -34,13 +47,13 @@ loss:
 
 optim:
   lr: 0.001
-  weight_decay: 0.003 
+  weight_decay: 0.003
   betas: [0.9, 0.999]
-  eps: 0.00000001 
+  eps: 0.00000001
 
 scheduler:
-  min_lr: 0.00001 
-  max_epoch: 100
+  min_lr: 0.00001
+  max_epoch: 120
   epoch_warmup: 8
   save_frequency: 0 # 0 disables periodic epoch saves
   val_frequency: 1 # 0 disables validation during training
@@ -49,7 +62,7 @@ mlflow:
   enable: true
   tracking_uri: "http://140.245.117.232:5000"
   experiment_name: "harpnext"
-  run_name: "[train] harpnext_kitti_convmonarch"
+  run_name: "[train] harpnext_kitti_phase2_rare_sampler"
   nested: false
   log_checkpoints: false
   log_code_snapshot: false
